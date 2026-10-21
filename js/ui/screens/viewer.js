@@ -254,8 +254,8 @@ function mount(root, params = {}, nav = {}) {
   async function doShare() {
     try {
       const share = await import('../../services/share.js');                  // 공유 모듈은 누를 때만 부른다
-      const r = await share.sharePhoto(cur);
-      if (r && r.ok === false && r.reason !== 'cancel') dom.toast?.('공유하지 못했어요');
+      const { afterShare } = await import('../widgets/sharefollow.js');
+      await afterShare(await share.sharePhoto(cur));                          // 취소는 조용히, 활성화가 끝났으면 [공유하기] 시트
     }
     catch (err) { console.error('공유 실패', err); dom.toast?.('공유하지 못했어요'); }
   }

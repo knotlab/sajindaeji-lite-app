@@ -50,6 +50,8 @@ img{max-width:100%}
 .screen.dark{background:var(--dark-bg);color:#fff}
 .screen > :first-child:not(.bar){margin-top:calc(var(--safe-t) + 8px)}
 .scroll{flex:1 1 auto;min-height:0}
+/* 화면 안 블록은 눌리지 않는다(목록이 길면 화면이 스크롤). 화면 전체를 채우는 촬영·크게 보기·자료 보기만 예외 */
+.screen > :not(.cap):not(.vw):not(.dv-page):not(.scroll){flex-shrink:0}
 .boot{align-items:center;justify-content:center}
 .boot-msg{color:var(--ink2);font-weight:700}
 

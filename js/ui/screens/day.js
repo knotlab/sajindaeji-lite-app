@@ -44,7 +44,7 @@ export default {
     const pick = datePicker(d => { if (d !== day) nav.replace('day', { day: d }); });
     const prevBtn = h('button', { type: 'button', class: 'day-nav-btn prev', 'data-testid': 'day-prev' });
     const nextBtn = h('button', { type: 'button', class: 'day-nav-btn next', 'data-testid': 'day-next' });
-    const calBtn = h('button', { type: 'button', class: 'day-nav-cal', 'aria-label': '다른 날짜 고르기', on: { click: () => pick.open() } }, icon('clock'), h('span', { text: '날짜 고르기' }));
+    const calBtn = h('button', { type: 'button', class: 'day-nav-cal', 'aria-label': '다른 날짜 고르기', on: { click: () => pick.open() } }, icon('cal'), h('span', { text: '날짜 고르기' }));
     const dnav = h('div', { class: 'day-nav' }, prevBtn, calBtn, nextBtn, pick.el);
 
     const sum = h('p', { class: 'day-sum', 'data-testid': 'day-sum' });

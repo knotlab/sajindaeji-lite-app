@@ -27,6 +27,7 @@
 .cap-suggest{background:none;border:1px dashed var(--dark-line,#5A5F5C)}
 .cap-doc-chip > .ic{width:18px;height:18px;color:#fff}
 .cap-doc-x .ic{width:20px;height:20px}
+.cap-doc-chip .cap-layout-btn{flex:none;width:44px;height:44px;min-width:44px;min-height:44px;color:#fff}
 .cap-doc-name,.cap-sug-name{flex:1;min-width:0;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cap-sug-lab{flex:none;font-weight:700;color:var(--dark-ink2,#C9CCC8)}
 .cap-doc-act{flex:none;min-height:44px;padding:0 12px;border-radius:8px;font-size:15px;font-weight:800;color:#fff}

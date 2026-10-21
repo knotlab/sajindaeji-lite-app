@@ -92,11 +92,14 @@ export function lockButton(btn, asyncFn) {
 // 열려 있는 동안 또 열면 줄을 세웠다가 앞의 것이 닫히고 QUEUE_GAP 뒤에 띄운다.
 // def.end(reason) 은 한 번만 불린다: 'close'(확인·항목 선택) | 'cancel'(취소·배경·뒤로).
 const QUEUE_GAP = 250;
+// 확인창(modal)은 줄을 서지 않고 지금 시트 위에 겹쳐 뜬다(휴지통 시트의 [영구 삭제] 등). 아래 시트는 under 에 두었다가 확인창이 닫히면 다시 맨 위가 된다
 const waiting = [];
+const under = [];
 let cur = null, gap = null;
 
 function show(def) {
-  if (cur || gap) { waiting.push(def); return; }
+  if (cur && !gap && def.kind === 'modal') under.push(cur);
+  else if (cur || gap) { waiting.push(def); return; }
   const host = $('#layer');
   if (!host) throw new Error('#layer 가 없어요');
   const back = h('div', { class: ['layer-back', `${def.kind}-back`] });
@@ -108,7 +111,8 @@ function show(def) {
     if (done) return false;
     done = true;
     back.remove();
-    if (cur === handle) cur = null;
+    if (cur === handle) cur = under.pop() || null;
+    else { const i = under.indexOf(handle); if (i >= 0) under.splice(i, 1); }
     def.handle = null;
     pump();
     try { def.end?.(reason); } catch (e) { console.error('시트 닫기 처리 실패', e); }

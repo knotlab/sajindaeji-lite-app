@@ -122,7 +122,7 @@ export default {
       try {
         const r = await exporter.deliver(res, how);
         if (r && r.ok === false && !r.cancelled) toast(`${how === 'share' ? '공유' : '저장'}하지 못했어요${r.error ? ` — ${r.error}` : ''}`, 4000);
-        else if (how === 'save') toast(r?.where ? `${r.where}에 저장했어요` : isApp() ? '문서/현장사진대지 lite에 저장했어요' : '내려받았어요');
+        else if (how === 'save') toast(r?.where && r.where !== 'download' && r.where !== 'share' ? `${r.where}에 저장했어요` : isApp() ? '문서/현장사진대지 lite에 저장했어요' : '내려받았어요');
       } catch (e) { toast(`${how === 'share' ? '공유' : '저장'}하지 못했어요 — ${errText(e)}`, 4000); }
     }
 
@@ -145,6 +145,7 @@ export default {
       const sv = h('button', { type: 'button', class: 'secondary xp-act', 'data-testid': 'export-save' }, icon('download'), isApp() ? '저장' : '내려받기');
       lock(sv, () => deliver('save'));
       btns.push(sv);
+      btns[0].classList.replace('secondary', 'primary');                     // 만든 뒤 할 일(공유·내려받기)이 주 행동 — 노랑은 하나만
       resultBox.replaceChildren(h('div', { class: 'xp-result', 'data-testid': 'export-result' },
         h('div', { class: 'xp-result-head' }, icon('zip'),
           h('div', { class: 'xp-result-text' },
@@ -199,6 +200,8 @@ export default {
       buildBtn.disabled = job.busy || n === 0;
       buildBtn.setAttribute('aria-busy', String(job.busy));
       buildBtn.lastChild.textContent = job.busy ? '만드는 중…' : job.result ? '다시 만들기' : '사진대지 만들기';
+      buildBtn.classList.toggle('primary', !job.result);
+      buildBtn.classList.toggle('secondary', !!job.result);
       paintResult();
     }
 

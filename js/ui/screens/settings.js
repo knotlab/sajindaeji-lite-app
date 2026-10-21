@@ -277,7 +277,7 @@ export default {
         const retry = pipeline.retryOriginals || pipeline.resaveOriginals;
         const btn = retry ? h('button', { type: 'button', class: 'st-btn st-btn-sm', 'data-act': 'gallery-retry', text: '다시 저장' }) : null;
         if (btn) lock(btn, async () => {
-          try { const r = await retry(failed.map(p => p.id)); toast(r?.ok != null ? `${r.ok}장을 갤러리에 넣었어요` : '다시 저장했어요'); }
+          try { const r = await retry(failed.map(p => p.id)); toast(r?.failed ? `${r.saved || 0}장 넣음 · ${r.failed}장은 또 못 넣었어요` : `${r?.saved ?? 0}장을 갤러리에 넣었어요`, 3000); }
           catch (e) { toast(`다시 저장하지 못했어요 — ${errText(e)}`); }
           paintGallery();
         });
@@ -402,7 +402,7 @@ export default {
       try {
         const r = await backupio.deliverBackup(z, how);
         if (r && r.ok === false && !r.cancelled) toast(`${how === 'share' ? '공유' : '저장'}하지 못했어요${r.error ? ` — ${r.error}` : ''}`, 4000);
-        else if (how === 'save') toast(r?.where ? `${r.where}에 저장했어요` : isNat ? '저장했어요' : '내려받았어요');
+        else if (how === 'save') toast(r?.where && r.where !== 'download' && r.where !== 'share' ? `${r.where}에 저장했어요` : isNat ? '저장했어요' : '내려받았어요');
         paintBackup();
       } catch (e) { toast(`${how === 'share' ? '공유' : '저장'}하지 못했어요 — ${errText(e)}`, 4000); }
     }

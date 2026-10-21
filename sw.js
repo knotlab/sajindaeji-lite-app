@@ -9,7 +9,7 @@
 // - 새 SW 가 기다리면 앱이 [새로 고침] → postMessage('skip') → skipWaiting → 앱이 controllerchange 에서 reload.
 
 // @gen:list-start
-const CACHE = 'lite-52edef7117';
+const CACHE = 'lite-d6c2914191';
 const PRECACHE = [
   "./",
   "./css/app.css",
@@ -68,6 +68,7 @@ const PRECACHE = [
   "./js/ui/widgets/docframe.js",
   "./js/ui/widgets/gpsline.js",
   "./js/ui/widgets/recordrow.js",
+  "./js/ui/widgets/sharefollow.js",
   "./js/ui/widgets/thumb.js",
   "./manifest.webmanifest",
   "./tpl/photo-sheet.meta.json",

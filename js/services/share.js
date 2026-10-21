@@ -82,7 +82,9 @@ async function prepare(record, photos) {
       },
     };
   }
-  const groups = batch(items, WEB_MAX_FILES, WEB_MAX_BYTES).map(g => g.map(it => new File([it.bytes], it.name, { type: 'image/jpeg' })));
+  // 공유 창이 아예 없는 브라우저(데스크톱 등)는 한도가 없는 내려받기라 한 번에 모두 — 나눠 보내면 브라우저가 두 번째 내려받기부터 막는다
+  const noShare = typeof navigator === 'undefined' || !navigator.share || !navigator.canShare;
+  const groups = (noShare ? [items] : batch(items, WEB_MAX_FILES, WEB_MAX_BYTES)).map(g => g.map(it => new File([it.bytes], it.name, { type: 'image/jpeg' })));
   return {
     text, total: items.length, batches: groups.length,
     async send(k = 0) {
@@ -90,7 +92,10 @@ async function prepare(record, photos) {
       if (!g) return { ok: false, error: '보낼 사진이 없어요' };
       const r = await webShareFiles(g, { text });
       if (r.ok || r.cancelled || r.needTap) return r;
-      for (const f of g) downloadBlob(f, f.name);                           // 공유를 못 하는 브라우저 — 사진을 내려받는다
+      for (const [i, f] of g.entries()) {                                     // 공유를 못 하는 브라우저 — 사진을 내려받는다
+        if (i) await new Promise(ok => setTimeout(ok, 150));                  // 한꺼번에 누르면 크롬이 10개 넘는 내려받기를 버린다
+        downloadBlob(f, f.name);
+      }
       return { ok: true, where: 'download' };
     },
   };

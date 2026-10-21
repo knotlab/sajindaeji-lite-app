@@ -89,6 +89,7 @@ function mount(root, params = {}, nav = {}) {
   let layoutMode = 'cam', frame = null, docId = null, docsMod = null, awake = null;
   const shots = new Map();                                                   // 누른 시각(takenAt) → { settled } — incoming 저장 확인용
   const cleanups = [];
+  let hideSnack = null, docTopAt = 0;                                        // [저장하고 다음] 스낵바 닫기 · 도면 작은 창 목표 위치(스낵바 올리기)
 
   // ---------- DOM ----------
   const backBtn = el('button', { type: 'button', class: 'icbtn cap-back', 'aria-label': '뒤로', onclick: () => leave() }, ic('back'));
@@ -96,12 +97,13 @@ function mount(root, params = {}, nav = {}) {
   const locSub = el('small', { class: 'cap-loc-sub' });
   const locChip = el('button', { type: 'button', class: 'cap-loc', 'data-testid': 'loc-chip', onclick: editLoc }, ic('map'), locText, locSub);
   const layoutBtn = el('button', { type: 'button', class: 'icbtn cap-layout-btn cap-rot', 'data-testid': 'cap-layout', 'aria-label': '도면·카메라 크게 바꾸기', hidden: true, onclick: () => toggleLayout() }, ic('swap'));
-  const top = el('div', { class: 'cap-top' }, backBtn, locChip, layoutBtn);
+  const top = el('div', { class: 'cap-top' }, backBtn, locChip);              // 배치 바꾸기는 도면 줄 안에(위치 칩이 좁아져 글이 잘리지 않게)
 
   const docName = el('span', { class: 'cap-doc-name' });
   const docChip = el('div', { class: 'cap-doc-chip', 'data-testid': 'cap-doc-chip', hidden: true },
     ic('doc'), docName,
     el('button', { type: 'button', class: 'cap-doc-act', onclick: () => chooseDoc() }, '바꾸기'),
+    layoutBtn,
     el('button', { type: 'button', class: 'cap-doc-x', 'aria-label': '도면 닫기', onclick: () => setDoc(null) }, ic('close')));
   const sugName = el('span', { class: 'cap-sug-name' });
   let sugId = null;
@@ -238,11 +240,28 @@ function mount(root, params = {}, nav = {}) {
       }
     }
     docWrap.dataset.place = place;
+    docTopAt = sr.top + t;                                                   // 목표 자리(움직이는 중의 getBoundingClientRect 가 아니라)
     Object.assign(docWrap.style, { left: `${Math.round(l)}px`, top: `${Math.round(t)}px`, width: `${Math.round(w)}px`, height: `${Math.round(hh)}px` });
+    liftSnackOverDoc();
+  }
+  // 스낵바·토스트: 도면 작은 창이 사진 줄 아래(dock)에 있으면 그 위로, 아니면 조작 줄 위로(router 기본) — [저장하고 다음] 때마다 도면을 가리지 않게
+  cleanups.push(() => hideSnack?.());                                       // 화면을 떠나면 [되돌리기] 스낵바도 닫는다(떠난 뒤엔 되돌릴 수 없다)
+  function liftSnackOverDoc() {
+    const snack = document.getElementById('snack');
+    if (!snack || dead) return;
+    if (docId && !docWrap.hidden && docWrap.dataset.place === 'dock') {
+      const top = docTopAt || docWrap.getBoundingClientRect().top;
+      snack.style.setProperty('--snack-lift', `${Math.max(0, Math.round(window.innerHeight - top - 8))}px`);
+    } else snack.style.setProperty('--snack-lift', `${bot.offsetHeight}px`);
   }
   const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(() => fit()) : null;
   ro?.observe(stageWrap); ro?.observe(screen); ro?.observe(spacer);
   cleanups.push(() => ro?.disconnect());
+  // 뷰파인더 크기가 움직임(150ms) 끝에 바뀌어도 워터마크 미리보기를 그 크기로 다시 그린다(늘어난 글자가 남지 않게 — 실제 사진과 같게)
+  let wmRaf = 0;
+  const wmRo = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { cancelAnimationFrame(wmRaf); wmRaf = requestAnimationFrame(() => { if (!dead) drawWm(); }); }) : null;
+  wmRo?.observe(vf);
+  cleanups.push(() => { wmRo?.disconnect(); cancelAnimationFrame(wmRaf); });
 
   function paintRatio() { ratioBtn.textContent = RATIO_LABEL[ratio] || ratio; ratioBtn.dataset.value = ratio; }
 
@@ -554,7 +573,8 @@ function mount(root, params = {}, nav = {}) {
       loc = r.location; content = r.content; freshHint = false; params.freshHint = false;
       paintAll(); drawWm();
     };
-    if (typeof dom.snackbar === 'function') dom.snackbar('저장했어요. 다음 묶음', { actionLabel: '되돌리기', onAction: undo });
+    liftSnackOverDoc();
+    if (typeof dom.snackbar === 'function') hideSnack = dom.snackbar('저장했어요. 다음 묶음', { actionLabel: '되돌리기', onAction: undo });
     else dom.toast?.('저장했어요. 다음 묶음');
   }
 
@@ -612,7 +632,7 @@ function mount(root, params = {}, nav = {}) {
     if (!frame) {
       const mod = await imp('../widgets/docframe.js');
       if (!fn(mod, 'docFrame') || dead) { dom.toast?.('도면을 띄우지 못했어요'); return; }
-      frame = mod.docFrame({ onState: () => {} });
+      frame = mod.docFrame({ onState: () => {}, hint: false });                 // 안내 띠는 자료함·자료 보기에서만(작은 창을 가리지 않게)
       docWrap.append(frame.el);                                              // iframe 은 여기 한 번만 붙이고 옮기지 않는다(배치는 CSS 로만)
       frame.onTap?.(() => { if (layoutMode === 'cam') toggleLayout(); });
     }

@@ -6,7 +6,7 @@ import * as dom from '../dom.js';
 import * as store from '../../data/store.js';
 import * as pipeline from '../../media/pipeline.js';
 import * as thumbW from '../widgets/thumb.js';
-import { dayLabel, hm } from '../../core/date.js';
+import { dayLabel, hm, dayKey } from '../../core/date.js';
 import * as geo from '../../core/geo.js';
 
 const { h, icon } = dom;
@@ -83,6 +83,10 @@ export default {
 
     const moreBtn = h('button', { type: 'button', class: 'primary rec-more', 'data-testid': 'rec-more-shots' }, icon('camera'), h('span', { text: '사진 더 찍기' }));
     const addBtn = h('button', { type: 'button', class: 'secondary rec-add', 'data-testid': 'rec-add-photo' }, icon('image'), h('span', { text: '갤러리에서 추가' }));
+    // 지난 날짜 묶음: 지금 카메라로 찍는 일보다 갤러리에서 넣는 일이 주 행동 — 노랑을 [갤러리에서 추가]로
+    if ((store.record(id)?.day || dayKey(Date.now())) !== dayKey(Date.now())) {
+      moreBtn.classList.replace('primary', 'secondary'); addBtn.classList.replace('secondary', 'primary');
+    }
     const dock = h('div', { class: 'dock rec-dock' }, addBtn, moreBtn);
 
     const body = h('div', { class: 'rec-body' },
@@ -111,7 +115,7 @@ export default {
 
     const lock = (btn, fn) => (typeof dom.lockButton === 'function' ? dom.lockButton(btn, fn) : btn.addEventListener('click', fn));
     lock(shareBtn, async () => {
-      try { const share = await import('../../services/share.js'); await share.shareRecord(id); }
+      try { const share = await import('../../services/share.js'); const { afterShare } = await import('../widgets/sharefollow.js'); await afterShare(await share.shareRecord(id)); }
       catch (e) { if (e?.name !== 'AbortError') { console.error('공유 실패', e); toast('공유하지 못했어요'); } }
     });
     moreBtn.addEventListener('click', () => nav.go('capture', { recordId: id }));

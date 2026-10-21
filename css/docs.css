@@ -10,6 +10,7 @@
 .docframe.df-passive .df-frame{pointer-events:none}
 .df-hint{position:absolute;left:0;right:0;bottom:0;z-index:3;padding:6px 8px;font-size:13px;font-weight:700;line-height:1.4;background:rgba(0,0,0,.78);color:#fff;pointer-events:none}
 .df-hint[hidden]{display:none}
+.dv-stage .df-hint{bottom:calc(84px + env(safe-area-inset-bottom,0px))}   /* 자료 보기: 떠 있는 [이 도면 띄우고 촬영] 버튼 위로 */
 
 /* ---- 자료함 ---- */
 .dx-page{padding:0 0 calc(48px + env(safe-area-inset-bottom))}
