@@ -32,8 +32,9 @@
 .home-day-t b{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
 .home-day-t small{font-size:13px;color:var(--ink2);white-space:nowrap}
 .home-day-th{flex:1;min-width:0;display:flex;gap:4px;justify-content:flex-end;overflow:hidden}
+.home-day-th .thumb-box{flex:none;border-radius:4px}
 .home-day-th img{width:52px;height:39px;border-radius:4px;flex:none}
-@media (max-width:370px){.home-day-th img:nth-child(4){display:none}}
+@media (max-width:370px){.home-day-th .thumb-box:nth-child(4){display:none}}
 .home-more{margin-top:4px}
 
 /* 숨은 날짜 입력(홈·날짜 화면 공용) */

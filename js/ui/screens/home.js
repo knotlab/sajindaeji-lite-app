@@ -18,6 +18,8 @@ const cnt = v => (typeof v === 'number' ? v : (v?.length ?? 0));
 const DAY_MS = 864e5;
 const BACKUP_WARN_DAYS = 7;
 const PAGE = 30;
+// 줄이 보이는 값(같으면 줄을 다시 만들지 않는다). 계산할 수 없으면 NaN — 늘 다시 만든다
+const rowSig = r => (typeof rowW.recordRowSig === 'function' ? rowW.recordRowSig(r) : NaN);
 
 // 백업 알림 문구 — 7일이 안 됐으면 null
 export function backupNotice(lastBackupAt, oldestAt, now) {
@@ -28,6 +30,8 @@ export function backupNotice(lastBackupAt, oldestAt, now) {
   if (Number.isFinite(oldestAt) && now - oldestAt > BACKUP_WARN_DAYS * DAY_MS) return '아직 백업 파일이 없어요 · 백업 파일 만들기';
   return null;
 }
+
+const daySig = d => `${d.day}|${cnt(d.records)}|${cnt(d.photos)}|${(d.cover || []).slice(0, 4).join(',')}`;
 
 function dayRow(d, nav) {
   const cover = (d.cover || []).slice(0, 4);
@@ -128,14 +132,15 @@ export default {
       let photos = 0;
       for (const r of recs) photos += cnt(store.photosOf(r.id));
       todayHead.textContent = `오늘 ${mdw(now)} · 묶음 ${recs.length} · 사진 ${photos}`;
-      todayList.replaceChildren(...recs.map(r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) })));
+      // 바뀐 줄만 다시 만든다(사진 한 장 처리될 때마다 목록 전체·썸네일 전체를 다시 그리지 않게)
+      dom.syncList(todayList, recs, { key: r => r.id, sig: rowSig, make: r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) }) });
       todayList.hidden = !recs.length;
       todayEmpty.hidden = !!recs.length;
 
       // 지난 날짜
       const days = (store.days?.() || []).filter(d => d.day !== today && d.day < today);
       if (!shown) shown = PAGE;
-      pastList.replaceChildren(...days.slice(0, shown).map(d => dayRow(d, nav)));
+      dom.syncList(pastList, days.slice(0, shown), { key: d => d.day, sig: daySig, make: d => dayRow(d, nav) });
       pastList.hidden = !days.length;
       pastEmpty.hidden = !!days.length;
       moreBtn.hidden = days.length <= shown;

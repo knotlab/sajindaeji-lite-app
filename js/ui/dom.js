@@ -46,6 +46,24 @@ export function h(tag, attrs, ...children) {
   return el;
 }
 
+// 목록을 통째로 다시 만들지 않고 바뀐 줄만(체감 속도) — items 순서대로 그리되, key 가 같고 sig(그 줄에 보이는 값)가 같으면 전의 노드를 그대로 쓴다.
+// 노드는 Element 여야 한다. 순서가 같은 줄은 건드리지 않는다(새 줄 끼우기·없어진 줄 빼기만)
+export function syncList(parent, items, { key, sig, make }) {
+  const old = parent._sync || new Map();
+  const next = new Map();
+  const nodes = [];
+  for (const it of items) {
+    const k = key(it), s = sig(it);
+    let e = old.get(k);
+    if (!e || e.sig !== s) e = { sig: s, node: make(it) };
+    next.set(k, e);
+    nodes.push(e.node);
+  }
+  parent._sync = next;
+  for (let i = 0; i < nodes.length; i++) { const at = parent.children[i]; if (at !== nodes[i]) parent.insertBefore(nodes[i], at || null); }
+  while (parent.children.length > nodes.length) parent.lastElementChild.remove();
+}
+
 // <svg class="ic"><use href="#i-name"/></svg> — 스프라이트는 index.html 에 있다
 export function icon(name, size = 24) {
   const svg = document.createElementNS(SVGNS, 'svg');
@@ -97,11 +115,27 @@ const waiting = [];
 const under = [];
 let cur = null, gap = null;
 
+// 시트·대화상자가 떠 있는 동안 뒤 화면(#view)의 높이를 그대로 묶어 둔다 — 키보드가 올라와 창이 줄어도 뒤 화면을 다시 배치하지 않게
+// (촬영 화면은 뷰파인더·워터마크 미리보기를 크기마다 다시 그려, 키보드가 뜨는 동안 글 입력이 늦어졌다). 다 닫히면 푼다
+let frozen = false;
+function freezeView(on) {
+  const v = $('#view');
+  if (!v || on === frozen) return;
+  frozen = on;
+  if (on) {
+    const hh = v.getBoundingClientRect().height;
+    if (hh > 0) { v.style.height = `${Math.round(hh)}px`; v.style.flex = 'none'; }
+    v.dataset.frozen = '1';
+  } else { v.style.removeProperty('height'); v.style.removeProperty('flex'); delete v.dataset.frozen; }
+}
+export const viewFrozen = () => frozen;
+
 function show(def) {
   if (cur && !gap && def.kind === 'modal') under.push(cur);
   else if (cur || gap) { waiting.push(def); return; }
   const host = $('#layer');
   if (!host) throw new Error('#layer 가 없어요');
+  freezeView(true);
   const back = h('div', { class: ['layer-back', `${def.kind}-back`] });
   const box = h('div', { class: def.kind, 'data-testid': 'sheet', role: 'dialog', 'aria-modal': 'true' });
   if (def.label) box.setAttribute('aria-label', def.label);
@@ -115,6 +149,7 @@ function show(def) {
     else { const i = under.indexOf(handle); if (i >= 0) under.splice(i, 1); }
     def.handle = null;
     pump();
+    if (!cur && !gap) freezeView(false);
     try { def.end?.(reason); } catch (e) { console.error('시트 닫기 처리 실패', e); }
     return true;
   }
@@ -138,7 +173,7 @@ function pump() {
 function dismiss(def) {
   const i = waiting.indexOf(def);
   if (i >= 0) { waiting.splice(i, 1); def.end?.('cancel'); return true; }
-  if (gap === def) { clearTimeout(def.timer); def.timer = 0; gap = null; pump(); def.end?.('cancel'); return true; }
+  if (gap === def) { clearTimeout(def.timer); def.timer = 0; gap = null; pump(); if (!cur && !gap) freezeView(false); def.end?.('cancel'); return true; }
   if (def.handle) return def.handle.cancel();
   return false;
 }
@@ -300,10 +335,13 @@ export function toast(text, ms = 2200) {
 export function liftSnack(bottomEl) {
   const snack = $('#snack');
   if (!snack || !bottomEl) return () => {};
-  const apply = () => { snack.style.setProperty('--snack-lift', `${bottomEl.offsetHeight}px`); };
-  apply();
-  const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
-  ro?.observe(bottomEl);
+  // 크기는 ResizeObserver 가 배치가 끝난 뒤 준다 — 화면을 붙이자마자 offsetHeight 를 읽으면 새 화면 전체를 한 번 더 강제로 배치한다(전환이 늦어짐)
+  let last = '';
+  const set = hh => { const v = `${Math.round(hh)}px`; if (v !== last) { last = v; snack.style.setProperty('--snack-lift', v); } };
+  const ro = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(en => { const b = en[0]?.borderBoxSize?.[0]; set(b ? b.blockSize : bottomEl.offsetHeight); })
+    : null;
+  if (ro) ro.observe(bottomEl); else set(bottomEl.offsetHeight);
   return () => { ro?.disconnect(); snack.style.removeProperty('--snack-lift'); };
 }
 
@@ -331,8 +369,11 @@ export function pickFiles({ accept = 'image/*', capture = null, multiple = false
 // ---------- 키보드 높이(visualViewport) — 시트가 키보드 위에 오게. interactive-widget=resizes-content 가 먹는 곳에서는 0 ----------
 if (typeof window !== 'undefined' && window.visualViewport) {
   const vv = window.visualViewport;
+  let lastKb = -1;
   const upd = () => {
     const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    if (kb === lastKb) return;                                                   // 루트 변수를 고치면 문서 전체 스타일을 다시 계산한다 — 바뀔 때만
+    lastKb = kb;
     document.documentElement.style.setProperty('--kb', `${kb}px`);
   };
   vv.addEventListener('resize', upd);

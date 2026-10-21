@@ -1,0 +1,110 @@
+// 사진 처리 Web Worker — 디코드·회전·자르기·축소·JPEG 인코딩을 메인 스레드 밖에서(글 입력·화면이 멈추지 않게, 2026-10-21 현장 "다 느림")
+// 클래식 워커(import 없음) — image.js 의 transformCanvas 와 같은 규칙(① 시계 방향 turns×90° ② 돌린 그림 가운데 aspect 자르기 ③ 긴 변 maxSide)을 따로 둔다.
+//   메인 스레드 canvas.toBlob 은 A55 웹뷰에서 장당 약 4초였지만(공시체 실측) 워커의 convertToBlob 은 메인을 막지 않는다.
+// 요청 { id, op, blob, w0?, h0?, turns, aspect, ... } → 응답 { id, ok, ... } | { id, ok:false, error, code }
+//   op 'work' : 작업본(maxSide workMax, q workQ) + 썸네일(thumbMax, thumbQ) → { work: Blob, thumb: Blob, w, h, tw, th, ms }
+//   op 'full' : 풀 해상도 회전·자르기(갤러리 원본, q) → { blob, w, h, ms }
+//   op 'ping' : { ok: true } (OffscreenCanvas 가 없으면 ok:false code:'NO_OFFSCREEN')
+'use strict';
+
+function cropRect(W, H, aspect) {
+  if (!(aspect > 0) || !(W > 0) || !(H > 0)) return { x: 0, y: 0, w: W, h: H };
+  let w = W, h = W / aspect;
+  if (h > H) { h = H; w = H * aspect; }
+  w = Math.min(W, Math.round(w)); h = Math.min(H, Math.round(h));
+  return { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2), w, h };
+}
+
+// 결과 크기 계산은 원본(방향 적용) 크기 W×H 기준 — 미리 줄인 비트맵을 써도 image.transformCanvas 와 같은 크기·같은 그림이 나온다
+function plan(W, H, turns, aspect, maxSide) {
+  const k = ((turns % 4) + 4) % 4;
+  const RW = k % 2 ? H : W, RH = k % 2 ? W : H;
+  const c0 = aspect ? cropRect(RW, RH, aspect) : { x: 0, y: 0, w: RW, h: RH };
+  const s = Math.min(1, maxSide / Math.max(c0.w, c0.h));
+  return { k, RW, RH, c0, s, w: Math.max(1, Math.round(c0.w * s)), h: Math.max(1, Math.round(c0.h * s)) };
+}
+function draw(src, W, H, p) {
+  const c = new OffscreenCanvas(p.w, p.h);
+  const x = c.getContext('2d');
+  x.imageSmoothingQuality = 'high';
+  x.scale(p.w / p.c0.w, p.h / p.c0.h);
+  x.translate(-p.c0.x, -p.c0.y);
+  x.translate(p.RW / 2, p.RH / 2);
+  x.rotate(p.k * Math.PI / 2);
+  x.drawImage(src, -W / 2, -H / 2, W, H);
+  return c;
+}
+function shrink(src, maxSide) {
+  const s = Math.min(1, maxSide / Math.max(src.width, src.height));
+  const c = new OffscreenCanvas(Math.max(1, Math.round(src.width * s)), Math.max(1, Math.round(src.height * s)));
+  const x = c.getContext('2d');
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+async function jpeg(canvas, q) {
+  const b = await canvas.convertToBlob({ type: 'image/jpeg', quality: q });
+  if (!b || !b.size) throw Object.assign(new Error('JPEG 인코딩 실패(빈 결과 — 메모리 부족일 수 있어요)'), { code: 'ENCODE' });
+  return b;
+}
+
+// 디코드 — 줄일 수 있으면 디코드하면서 줄인다(createImageBitmap resize). 방향(EXIF)은 늘 반영.
+// 줄인 비트맵의 가로세로 비가 기대(방향 적용 크기)와 다르면(브라우저마다 resize 와 방향 적용 순서가 다를 수 있음) 버리고 그대로 디코드
+async function decode(blob, w0, h0, scale) {
+  if (w0 > 0 && h0 > 0 && scale < 0.9) {
+    try {
+      const rw = Math.max(1, Math.round(w0 * scale)), rh = Math.max(1, Math.round(h0 * scale));
+      const b = await createImageBitmap(blob, { imageOrientation: 'from-image', resizeWidth: rw, resizeHeight: rh, resizeQuality: 'high' });
+      if (Math.abs(b.width - rw) <= 1 && Math.abs(b.height - rh) <= 1) return { bmp: b, W: w0, H: h0 };
+      b.close();
+    } catch { /* 아래로 */ }
+  }
+  const b = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  return { bmp: b, W: b.width, H: b.height };
+}
+
+async function work(m) {
+  const t0 = performance.now();
+  // 원본 크기를 모르면(머리 읽기 실패) 줄이지 않고 디코드
+  let W = m.w0, H = m.h0;
+  const pre = W > 0 && H > 0 ? plan(W, H, m.turns || 0, m.aspect || null, m.workMax) : null;
+  const d = await decode(m.blob, W, H, pre ? pre.s : 1);
+  W = d.W; H = d.H;
+  try {
+    const p = plan(W, H, m.turns || 0, m.aspect || null, m.workMax);
+    const wc = draw(d.bmp, W, H, p);
+    d.bmp.close();
+    const tc = shrink(wc, m.thumbMax);
+    const [wb, tb] = await Promise.all([jpeg(wc, m.workQ), jpeg(tc, m.thumbQ)]);
+    return { work: wb, thumb: tb, w: wc.width, h: wc.height, tw: tc.width, th: tc.height, ms: Math.round(performance.now() - t0) };
+  } finally { try { d.bmp.close(); } catch { /* 이미 닫힘 */ } }
+}
+
+async function full(m) {
+  const t0 = performance.now();
+  const d = await decode(m.blob, 0, 0, 1);
+  try {
+    const p = plan(d.W, d.H, m.turns || 0, m.aspect || null, m.maxSide || Infinity);
+    const c = draw(d.bmp, d.W, d.H, p);
+    d.bmp.close();
+    return { blob: await jpeg(c, m.q || 0.92), w: c.width, h: c.height, ms: Math.round(performance.now() - t0) };
+  } finally { try { d.bmp.close(); } catch { /* 이미 닫힘 */ } }
+}
+
+self.onmessage = async e => {
+  const m = e.data || {};
+  try {
+    if (typeof OffscreenCanvas !== 'function' || typeof createImageBitmap !== 'function') throw Object.assign(new Error('OffscreenCanvas 없음'), { code: 'NO_OFFSCREEN' });
+    let r;
+    if (m.op === 'ping') {
+      const t = new OffscreenCanvas(2, 2);
+      if (!t.getContext('2d') || typeof t.convertToBlob !== 'function') throw Object.assign(new Error('OffscreenCanvas 2d 없음'), { code: 'NO_OFFSCREEN' });
+      r = {};
+    } else if (m.op === 'work') r = await work(m);
+    else if (m.op === 'full') r = await full(m);
+    else throw new Error(`모르는 작업: ${m.op}`);
+    self.postMessage({ id: m.id, ok: true, ...r });
+  } catch (err) {
+    self.postMessage({ id: m.id, ok: false, error: String(err?.message || err), code: err?.code || err?.name || '' });
+  }
+};

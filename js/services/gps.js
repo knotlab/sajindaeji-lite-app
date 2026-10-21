@@ -93,9 +93,16 @@ function end(state) {
   if (state) emit({ state });
 }
 
+// 화면에 보이는 값(좌표 5자리·±m)이 같으면 구독자를 깨우지 않고 시각만 새로(사진에 붙일 위치는 늘 최신) — 단 10초마다 한 번은 알린다(새 위치를 기다리는 쪽)
+const r5 = v => Math.round(v * 1e5);
+const sameShown = (a, b) => !!a && !!b && r5(a.lat) === r5(b.lat) && r5(a.lng) === r5(b.lng) && Math.round(a.acc ?? -1) === Math.round(b.acc ?? -1);
+let lastPosEmit = 0;
 function onPos(pos) {
   if (!Number.isFinite(pos?.lat) || !Number.isFinite(pos?.lng)) return;
-  emit({ state: 'ok', pos: Object.freeze({ lat: pos.lat, lng: pos.lng, acc: Number.isFinite(pos.acc) ? pos.acc : null, at: pos.at || Date.now() }) });
+  const next = Object.freeze({ lat: pos.lat, lng: pos.lng, acc: Number.isFinite(pos.acc) ? pos.acc : null, at: pos.at || Date.now() });
+  const now = Date.now();
+  if (snap.state === 'ok' && sameShown(snap.pos, next) && now - lastPosEmit < 10000) snap = Object.freeze({ ...snap, pos: next });
+  else { lastPosEmit = now; emit({ state: 'ok', pos: next }); }
   maybeGeocode(snap.pos);
 }
 
@@ -127,6 +134,6 @@ async function maybeGeocode(pos, force = false) {
 // ---- 시험용 ----
 export function _setSource(geo) { geoSource = geo || null; }
 export function _reset() {
-  end(null); refs = 0; paused = false; lastReq = null; inflight = false;
+  end(null); refs = 0; paused = false; lastReq = null; inflight = false; lastPosEmit = 0;
   snap = Object.freeze({ state: 'off', pos: null, addr: null, addrState: 'idle', addrError: null });
 }

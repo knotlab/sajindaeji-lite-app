@@ -11,6 +11,8 @@ const { h, icon } = dom;
 const toast = (t, ms) => dom.toast?.(t, ms);
 const cnt = v => (typeof v === 'number' ? v : (v?.length ?? 0));
 const validDay = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d);
+// 줄이 보이는 값(같으면 줄을 다시 만들지 않는다). 계산할 수 없으면 NaN — 늘 다시 만든다
+const rowSig = r => (typeof rowW.recordRowSig === 'function' ? rowW.recordRowSig(r) : NaN);
 
 // 숨은 날짜 입력칸 → 고르면 fn(day). 미래 날짜는 막는다
 export function datePicker(onPick) {
@@ -110,7 +112,7 @@ export default {
       let photos = 0;
       for (const r of recs) photos += cnt(store.photosOf(r.id));
       sum.textContent = `묶음 ${recs.length} · 사진 ${photos}`;
-      list.replaceChildren(...recs.map(r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) })));
+      dom.syncList(list, recs, { key: r => r.id, sig: rowSig, make: r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) }) });   // 바뀐 줄만
       empty.hidden = !!recs.length;
       empty.textContent = today ? '아직 기록이 없어요. 아래 [기록 시작]을 눌러요.' : '이 날짜엔 기록이 없어요. 아래 [이 날짜에 사진 추가]로 넣어요.';
       const { prev, next } = neighbors();

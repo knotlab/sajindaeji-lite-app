@@ -2,18 +2,23 @@
 //   APK : Capacitor Filesystem DATA/<폴더>/<id>.jpg (화면 표시는 convertFileSrc 주소)
 //   웹  : OPFS <폴더>/<id>.jpg (createWritable 이 되는 브라우저)
 //   폴백: IndexedDB blobs `<id>:<kind>` 에 ArrayBuffer(공시체 방식 — iOS Safari 의 IDB Blob 문제 회피)
-// 종류(kind): work(작업본) · thumb(썸네일) · incoming(처리 전 원본) · doc(자료함 파일, 확장자 없음)
+// 종류(kind): work(작업본) · thumb(썸네일) · incoming(처리 전 원본) · original(갤러리에 넣기 전 원본, APK) · doc(자료함 파일, 확장자 없음)
 // 사진 메타의 photo.store 가 그 사진이 어디 있는지 적는다 — 읽을 때 그 값을 주면 바로 거기서, 없으면 차례로 찾는다.
+// 잠깐 머무는 원본(incoming·original)은 APK 에서도 브리지 없이 OPFS(안 되면 IDB)에 쓴다 — 수 MB 를 base64 로 바꿔
+//   브리지로 여러 번 보내던 것이 셔터 뒤 사진이 늦게 뜨던 큰 원인이었다(2026-10-21 현장 "다 느림"). 어디 썼는지는 put 이 돌려주는 store 로 남는다.
+// APK 의 base64 는 FileReader(비동기, 네이티브)로 만든다 — 메인 스레드의 btoa 를 쓰지 않는다.
 import * as N from '../platform/native.js';
 import { tx } from './db.js';
 
-const DIRS = { work: 'photos', thumb: 'thumbs', incoming: 'incoming', doc: 'docs' };
+const DIRS = { work: 'photos', thumb: 'thumbs', incoming: 'incoming', original: 'originals', doc: 'docs' };
+const LOCAL = new Set(['incoming', 'original']);                             // APK 에서도 웹 저장소(OPFS/IDB)에 두는 종류
 const DATA = 'DATA';                                                         // Capacitor Directory.Data
 // 브리지 한 번에 넘기는 조각(원본 files.js 의 512KB). 3 의 배수로 맞춰 base64 조각 중간에 '=' 패딩이 끼지 않게 한다
 const CHUNK = 512 * 1024 - ((512 * 1024) % 3);
 
 let kindP = null;                                                            // 'file' | 'opfs' | 'idb' 를 정한 약속
 let current = null;
+let localP = null;                                                           // APK 의 incoming·original 저장소 'opfs' | 'idb'
 const dirHandles = new Map();
 
 const fileName = (kind, id) => (kind === 'doc' ? String(id) : `${id}.jpg`);
@@ -48,14 +53,24 @@ async function opfsWorks() {
 
 // force: 시험용('idb' | 'opfs' | 'file')
 export async function initPhotoFs({ force } = {}) {
-  if (force) { current = force; kindP = Promise.resolve(force); return { kind: force }; }
+  if (force) { current = force; kindP = Promise.resolve(force); localP = null; return { kind: force }; }
   if (!kindP) {
     kindP = (async () => {
-      if (N.isNative?.()) return 'file';
+      if (N.isNative?.()) {
+        N.initFileBase?.().catch(e => console.warn('파일 주소 뿌리를 못 받았어요', e));   // 썸네일 주소를 브리지 왕복 없이(fileSrcSync)
+        return 'file';
+      }
       return (await opfsWorks()) ? 'opfs' : 'idb';
     })().then(k => { current = k; return k; }, e => { kindP = null; throw e; });
   }
   return { kind: await kindP };
+}
+// APK 의 incoming·original 은 OPFS(안드로이드 웹뷰), 안 되면 IDB. 웹은 본 저장소 그대로
+async function localBackend() {
+  const k = await backend();
+  if (k !== 'file') return k;
+  if (!localP) localP = opfsWorks().then(ok => (ok ? 'opfs' : 'idb'), () => 'idb');
+  return localP;
 }
 const backend = async () => current || (await initPhotoFs()).kind;
 export const fsKind = () => current;
@@ -70,19 +85,16 @@ function toU8(v) {
 }
 const sizeOf = v => (isBlob(v) ? v.size : toU8(v).byteLength);
 async function slice(v, from, to) { return isBlob(v) ? new Uint8Array(await v.slice(from, to).arrayBuffer()) : toU8(v).subarray(from, to); }
-function b64(u8) {
-  let s = '';
-  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
-  return btoa(s);
-}
+// 조각 → base64 (FileReader, 비동기)
+const b64Of = (v, from, to) => N.toB64(isBlob(v) ? v.slice(from, to) : toU8(v).subarray(from, to));
 
 // ---- APK(Filesystem) ----
 const nPath = (kind, id) => `${DIRS[kind]}/${fileName(kind, id)}`;
 async function filePut(kind, id, data) {
   const path = nPath(kind, id), size = sizeOf(data);
   try {
-    await N.fsWrite(DATA, path, b64(await slice(data, 0, Math.min(size, CHUNK))));
-    for (let at = CHUNK; at < size; at += CHUNK) await N.fsAppend(DATA, path, b64(await slice(data, at, Math.min(size, at + CHUNK))));
+    await N.fsWrite(DATA, path, await b64Of(data, 0, Math.min(size, CHUNK)));
+    for (let at = CHUNK; at < size; at += CHUNK) await N.fsAppend(DATA, path, await b64Of(data, at, Math.min(size, at + CHUNK)));
     const st = await N.fsStat(DATA, path);
     if (!st || (Number.isFinite(st.size) && st.size !== size)) throw new Error(`끝까지 쓰지 못했어요(${st ? st.size : '없음'}/${size})`);
   } catch (e) {
@@ -148,7 +160,7 @@ async function idbGet(kind, id) {
 const READERS = { file: fileGet, opfs: opfsGet, idb: idbGet };
 const order = async store => {
   const k = await backend();
-  const all = k === 'file' ? ['file', 'idb'] : k === 'opfs' ? ['opfs', 'idb'] : ['idb', 'opfs'];
+  const all = k === 'file' ? ['file', 'opfs', 'idb'] : k === 'opfs' ? ['opfs', 'idb'] : ['idb', 'opfs'];
   return store && READERS[store] ? [store, ...all.filter(x => x !== store)] : all;
 };
 
@@ -156,7 +168,7 @@ const order = async store => {
 // → { store } — 실제로 넣은 곳. OPFS 가 그 순간 실패하면(용량 말고) IDB 로 넘긴다
 export async function put(kind, id, bytes) {
   checkKind(kind); checkId(id);
-  const k = await backend();
+  const k = LOCAL.has(kind) ? await localBackend() : await backend();
   if (k === 'file') { await filePut(kind, id, bytes); return { store: 'file' }; }
   if (k === 'opfs') {
     try { await opfsPut(kind, id, bytes); return { store: 'opfs' }; }
@@ -189,10 +201,12 @@ export async function has(kind, id, store) {
   return null;
 }
 
-// 화면용 주소. APK 는 convertFileSrc(빠름), 웹은 새 objectURL(캐시·해제는 store.js 가 한다)
+// 화면용 주소. APK 는 convertFileSrc(빠름 — 뿌리 주소를 받아 두었으면 getUri 왕복도 없이), 웹은 새 objectURL(캐시·해제는 store.js 가 한다)
 export async function url(kind, id, store) {
   checkKind(kind);
-  if ((store || (await backend())) === 'file' && (await N.fsStat(DATA, nPath(kind, id)).catch(() => null))) return N.fileSrc(DATA, nPath(kind, id));
+  if ((store || (await backend())) === 'file' && (await N.fsStat(DATA, nPath(kind, id)).catch(() => null))) {
+    try { return N.fileSrcSync(DATA, nPath(kind, id)); } catch { return N.fileSrc(DATA, nPath(kind, id)); }
+  }
   const b = await get(kind, id, store);
   return b ? URL.createObjectURL(b) : null;
 }
@@ -203,14 +217,15 @@ export async function remove(kind, id, store) {
   const k = await backend();
   const jobs = [tx(['blobs'], 'readwrite', t => { t.objectStore('blobs').delete(blobKey(kind, id)); }).catch(() => {})];
   if (k === 'file' || store === 'file') jobs.push(N.fsDelete(DATA, nPath(kind, id)).catch(() => {}));
-  if (k === 'opfs' || store === 'opfs') jobs.push(opfsDir(kind).then(d => d.removeEntry(fileName(kind, id))).catch(() => {}));
+  const opfsToo = k === 'opfs' || store === 'opfs' || (k === 'file' && LOCAL.has(kind) && !!globalThis.navigator?.storage?.getDirectory);
+  if (opfsToo) jobs.push(opfsDir(kind).then(d => d.removeEntry(fileName(kind, id))).catch(() => {}));
   await Promise.all(jobs);
 }
 
 async function entries(kind, sizes = true) {
   const k = await backend(), out = new Map();                                // id → size
   if (k === 'file') for (const f of await N.fsList(DATA, DIRS[kind]).catch(() => [])) out.set(idOf(kind, f.name), Number(f.size) || 0);
-  if (k !== 'file' && globalThis.navigator?.storage?.getDirectory) {       // IDB 모드여도 예전에 OPFS 에 넣은 것까지
+  if ((k !== 'file' || LOCAL.has(kind)) && globalThis.navigator?.storage?.getDirectory) {   // IDB 모드여도 예전에 OPFS 에 넣은 것까지(APK 는 incoming·original)
     try {
       for await (const [name, h] of (await opfsDir(kind)).entries()) {
         if (h.kind !== 'file' || name.endsWith('.crswap')) continue;         // 쓰는 중인 임시 사본은 빼고

@@ -6,6 +6,12 @@ import { thumb } from './thumb.js';
 
 const MAX_THUMBS = 5;
 
+// 이 줄에 보이는 값 — 같으면 줄을 다시 만들 필요가 없다(dom.syncList). 썸네일의 처리 끝·워터마크는 thumb 이 스스로 다시 그린다
+export function recordRowSig(record) {
+  const ids = (store.photosOf?.(record.id) ?? []).map(p => p.id);
+  return JSON.stringify([record.location || '', record.content || '', record.createdAt, ids.length, ids.slice(0, MAX_THUMBS)]);
+}
+
 export function recordRow(record, { onOpen } = {}) {
   const photos = (store.photosOf?.(record.id) ?? []);
   const loc = (record.location || '').trim();

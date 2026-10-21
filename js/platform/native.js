@@ -37,6 +37,23 @@ export function b64ToBytes(b64) {
   return u8;
 }
 const toBytes = async d => (d instanceof Uint8Array ? d : d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(await d.arrayBuffer()));
+// Blob·bytes → base64(머리 없이). FileReader.readAsDataURL 은 브라우저 안(네이티브)에서 비동기로 만든다 —
+// String.fromCharCode+btoa 는 수 MB 면 메인 스레드를 수백 ms 막는다(2026-10-21 현장 "다 느림"). FileReader 가 없으면 예전 방식
+export async function toB64(data) {
+  if (typeof FileReader !== 'function' || typeof Blob !== 'function') return bytesToB64(await toBytes(data));
+  const blob = data instanceof Blob ? data : new Blob([data instanceof ArrayBuffer ? new Uint8Array(data) : data]);
+  if (!blob.size) return '';
+  const url = await new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result || ''));
+    fr.onerror = () => rej(fr.error || new Error('base64 변환 실패'));
+    fr.readAsDataURL(blob);
+  });
+  const i = url.indexOf(',');
+  const b = i >= 0 ? url.slice(i + 1) : '';
+  if (!b) throw new Error('base64 변환 실패(빈 결과)');
+  return b;
+}
 
 // ---- 파일(Filesystem) — 원본 native.js 이식 ----
 const fs = () => need('Filesystem');
@@ -128,7 +145,7 @@ export function cacheWriter(rel) {
   return {
     async append(u8) {
       await start();
-      for (let i = 0; i < u8.length; i += CHUNK) await fsAppend(DIR.CACHE, tmp, bytesToB64(u8.subarray(i, i + CHUNK)));
+      for (let i = 0; i < u8.length; i += CHUNK) await fsAppend(DIR.CACHE, tmp, await toB64(u8.subarray(i, i + CHUNK)));
       written += u8.length;
     },
     async finish(expectedSize = written) {
@@ -247,7 +264,7 @@ export async function saveOriginal({ bytes, path, name, prefer = 'sd' } = {}) {
   try {
     const opts = { name, prefer };
     if (path) opts.path = path;
-    else if (bytes) opts.data = bytesToB64(await toBytes(bytes));
+    else if (bytes) opts.data = await toB64(bytes);                        // Blob 도 받는다(워커가 만든 원본)
     else return { ok: false, error: '저장할 사진이 없어요' };
     const r = await S.saveOriginal(opts);
     if (!r?.savedTo) return { ok: false, error: r?.error || '갤러리에 넣지 못했어요' };

@@ -96,6 +96,7 @@ export default {
     root.append(bar, body, missing, dock);
 
     const cur = () => { const r = store.record(id); return r && !r.deletedAt ? r : null; };
+    const saving = { location: null, content: null };                       // 저장 중인 글 — 확인을 누르면 화면에 먼저 보인다(저장 줄이 밀려 있어도)
 
     async function edit(field) {
       const r = cur(); if (!r) return;
@@ -107,8 +108,10 @@ export default {
       if (v == null || dead) return;
       const next = multi ? v.replace(/\s+$/, '') : v.trim();
       if (next === (cur()?.[field] || '')) return;
+      saving[field] = next; render();
       try { await store.updateRecord(id, { [field]: next }, Date.now()); }   // lastLocation 은 건드리지 않는다
       catch (e) { console.error('묶음을 고치지 못했다', e); toast('저장하지 못했어요. 다시 해 주세요'); }
+      finally { if (saving[field] === next) { saving[field] = null; schedule(); } }
     }
     locBtn.addEventListener('click', () => edit('location'));
     conBtn.addEventListener('click', () => edit('content'));
@@ -144,7 +147,7 @@ export default {
       body.hidden = !r; dock.hidden = !r; shareBtn.hidden = !r; missing.hidden = !!r;
       if (!r) { title.textContent = '묶음'; return; }
       title.textContent = `묶음 ${r.no || ''}`.trim();
-      const loc = (r.location || '').trim(), con = (r.content || '').trim();
+      const loc = (saving.location ?? r.location ?? '').trim(), con = (saving.content ?? r.content ?? '').trim();
       locVal.textContent = loc || '위치 미입력 · 눌러서 쓰기';
       locVal.classList.toggle('dim', !loc);
       conVal.textContent = con || '내용 없음 · 눌러서 쓰기';
@@ -159,7 +162,7 @@ export default {
       if (g) gpsInfo.textContent = `GPS ${geo.fmtCoord ? geo.fmtCoord(g.lat, g.lng) : `${g.lat.toFixed(5)}, ${g.lng.toFixed(5)}`}${Number.isFinite(g.acc) ? ` ${geo.fmtAcc ? geo.fmtAcc(g.acc) : `±${Math.round(g.acc)}m`}` : ''}`;
 
       grid.classList.toggle('cols-3', photos.length > 8);
-      grid.replaceChildren(...photos.map((p, i) => cell(p, i, id, nav)));
+      dom.syncList(grid, photos, { key: p => p.id, sig: p => `${photos.indexOf(p)}|${!p.state || p.state === 'ready' ? 'ready' : p.state}`, make: p => cell(p, photos.indexOf(p), id, nav) });   // 바뀐 칸만
       grid.hidden = !photos.length;
       empty.hidden = !!photos.length;
     }

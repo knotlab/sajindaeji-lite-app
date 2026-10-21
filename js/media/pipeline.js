@@ -1,15 +1,19 @@
 // 들어온 사진 처리 — 디스크 먼저 → 줄이기 → 준비됨 → (APK) 갤러리 원본, 부팅 복구(설계서 §4.5·§5.4, 원본 capture.js processPhoto·recover)
 // 순서(§4.5, 공시체 BUGREPORT: 카메라 중 프로세스가 죽어 사진이 통째로 사라진 사고):
 //   ① store.addIncoming — 원본 bytes 를 incoming 에 쓰고 Photo(processing)+record.photoIds 를 같이 저장. ingest() 는 여기까지 기다린다
-//   ② (줄) jpegComplete 검사 → exifTakenAt(gallery/syscam) → makeWorkAndThumb(turns·aspect 적용) → store.finishPhoto(ready, incoming 삭제)
-//   ③ (APK && saveToGallery && incam) native.saveOriginal({ bytes, name, prefer: settings.galleryPref }) → photo.original
+//   ② (줄) jpegComplete 검사 → exifTakenAt(gallery/syscam) → makeWorkAndThumbFast(워커, turns·aspect 적용) → store.finishPhoto(ready, incoming 삭제)
+//      (APK incam·갤러리 저장 켬) 작업본을 만드는 동안 원본을 original 에도 써 둔다 — incoming 이 지워진 뒤 앱이 죽어도 갤러리 원본을 잃지 않게
+//   ③ (APK && saveToGallery && incam) 「원본 줄」(사진이 화면에 뜬 뒤, 처리 줄이 비었을 때) original → 풀 해상도 회전·자르기(워커)
+//      → native.saveOriginal({ bytes, name, prefer: settings.galleryPref }) → photo.original → original 삭제. 부팅 recover 가 남은 original 을 이어서 넣는다
 //      syscam 은 Shot.take 가 이미 갤러리에 넣었다 → 그 결과를 original 에 적고 임시 파일은 ready 저장 뒤에만 지운다
 // 처리는 한 번에 하나씩(줄), 촬영은 막지 않는다. 회전·자르기 정보(xform)는 photo.xform 에 남겨 recover 때도 같은 그림이 나온다.
+// 즉시 미리보기: ingest 에 preview(셔터 순간 320px Blob, camera.shoot 의 shot.preview — 없으면 shotInfo 에서 찾음)를 주면
+//   처리하는 동안 preview(photoId) 가 그 주소를 돌려준다(썸네일이 「처리 중」 대신 사진을 보인다). 처리가 끝나고 잠시 뒤 해제.
 import * as store from '../data/store.js';
 import * as native from '../platform/native.js';
 import { uid } from '../core/model.js';
 import { dayKey } from '../core/date.js';
-import { jpegComplete, exifTakenAt, makeWorkAndThumb, transformCanvas, decode, canvasToJpeg, b64ToBytes } from './image.js';
+import { jpegComplete, exifTakenAt, makeWorkAndThumbFast, transformFull } from './image.js';
 import { shotInfo } from './camera.js';
 
 const MIN_TS = Date.UTC(1990, 0, 1);
@@ -22,6 +26,27 @@ export function originalName(id, ts = Date.now()) {
   return `현장_${t.getFullYear()}${p2(t.getMonth() + 1)}${p2(t.getDate())}_${p2(t.getHours())}${p2(t.getMinutes())}${p2(t.getSeconds())}_${id}.jpg`;
 }
 const hasXform = x => !!x && ((x.turns % 4) || x.aspect);
+const fsMod = () => import('../data/photofs.js');
+
+// ---- 즉시 미리보기 ----
+const previews = new Map();               // id → objectURL
+const PREVIEW_KEEP_MS = 15000;            // 준비됨 뒤에도 잠깐 둔다 — 썸네일이 워터마크 그림을 받기 전까지 이 주소를 보이고 있을 수 있다
+// 처리 중 사진의 셔터 순간 그림 주소 | null(없음·이미 해제). 주소는 이 모듈이 해제한다(호출자는 revoke 하지 않는다)
+export const preview = id => previews.get(id) || null;
+function setPreview(id, src) {
+  if (!id || !src) return;
+  let u = null;
+  try { u = typeof src === 'string' ? src : URL.createObjectURL(src); } catch { return; }
+  dropPreview(id);
+  previews.set(id, u);
+}
+function dropPreview(id) {
+  const u = previews.get(id);
+  if (!u) return;
+  previews.delete(id);
+  if (u.startsWith('blob:')) { try { URL.revokeObjectURL(u); } catch { /* 이미 해제 */ } }
+}
+function dropPreviewLater(id) { if (previews.has(id)) setTimeout(() => dropPreview(id), PREVIEW_KEEP_MS); }
 
 // ---- 처리 줄 ----
 let lane = Promise.resolve();
@@ -42,7 +67,7 @@ export const idle = () => (active ? new Promise(r => idleWaiters.push(r)) : Prom
 function enqueue(id) {
   if (queued.has(id)) return lane;
   queued.add(id); bump(1);
-  const p = lane.then(() => processPhoto(id)).catch(e => console.error('사진 처리 실패', id, e)).finally(() => { queued.delete(id); mem.delete(id); bump(-1); });
+  const p = lane.then(() => processPhoto(id)).catch(e => console.error('사진 처리 실패', id, e)).finally(() => { queued.delete(id); mem.delete(id); dropPreviewLater(id); bump(-1); });
   lane = p;
   return p;
 }
@@ -58,10 +83,21 @@ async function readIncoming(p) {
   return b ? new Uint8Array(await b.arrayBuffer()) : null;
 }
 
+// 처리 시간 기록(측정·디버그용 — 마지막 20장)
+const timings = [];
+export const lastTimings = () => timings.slice();
+
+// APK 앱 안 카메라 + 갤러리 저장 켬 → 갤러리 원본이 필요한 사진
+function wantsOriginal(p) {
+  if (!p || !native.isNative() || p.source !== 'incam' || p.original?.savedTo) return false;
+  return store.settings().saveToGallery !== false;
+}
+
 async function processPhoto(id) {
   const p = store.photo(id);
   if (!p || p.state !== 'processing') return;
   const m = mem.get(id) || {};
+  const t0 = performance.now();
   try {
     const raw = m.raw || await readIncoming(p);
     if (!raw || !raw.length) throw Object.assign(new Error('원본 파일을 찾지 못했어요'), { code: 'NO_SOURCE' });
@@ -72,9 +108,14 @@ async function processPhoto(id) {
       if (exif != null) { patch.takenAt = exif; if (p.takenAtSource === 'file' || p.takenAtSource === 'manual') patch.takenAtSource = 'exif'; }
     }
     const xform = m.xform || p.xform || null;
-    const { work, thumb } = await makeWorkAndThumb(raw, hasXform(xform) ? xform : {});
-    const done = await store.finishPhoto(id, { work: b64ToBytes(work.base64), thumb: b64ToBytes(thumb.base64), w: work.w, h: work.h, ...patch });
-    await afterReady(done, raw, xform, m);
+    // 갤러리 원본용 사본 — 작업본을 만드는 동안(워커) 같이 쓴다. incoming 은 ready 저장 때 지워지므로 그 전에 끝나 있어야 한다
+    const keepOrig = wantsOriginal(p) ? fsMod().then(fs => fs.put('original', id, raw)).then(() => true, e => { console.warn('갤러리 원본 사본을 못 썼어요 — 바로 넣어요', e); return false; }) : null;
+    const r = await makeWorkAndThumbFast(raw, hasXform(xform) ? xform : {});
+    const kept = keepOrig ? await keepOrig : false;
+    const done = await store.finishPhoto(id, { work: r.work.blob, thumb: r.thumb.blob, w: r.work.w, h: r.work.h, ...patch });
+    timings.push({ id, via: r.via, workerMs: r.ms, totalMs: Math.round(performance.now() - t0), bytes: raw.length });
+    if (timings.length > 20) timings.shift();
+    await afterReady(done, raw, xform, m, kept);
   } catch (e) {
     console.warn('사진 처리 실패', id, e);
     if (e?.code === 'NO_PHOTO') return;                                     // 그새 영구 삭제됨
@@ -83,7 +124,8 @@ async function processPhoto(id) {
 }
 
 // 준비됨 뒤 — 갤러리 원본(APK). 실패해도 사진은 저장돼 있다(original.error)
-async function afterReady(p, raw, xform, m) {
+//   kept(원본 사본을 original 에 써 둠)면 원본 줄로 넘기고 바로 돌아온다(다음 사진 처리를 막지 않게). 못 썼으면 예전처럼 여기서 바로
+async function afterReady(p, raw, xform, m, kept = false) {
   if (!p || !native.isNative()) return;
   const s = store.settings();
   const tempPath = m.tempPath || p.tempPath || null;
@@ -94,7 +136,43 @@ async function afterReady(p, raw, xform, m) {
     return;
   }
   if (p.source !== 'incam' || s.saveToGallery === false || p.original?.savedTo) return;
+  if (kept) { queueOriginal(p.id); return; }
   await saveOriginalOf(p, raw, xform);
+}
+
+// ---- 원본 줄(APK 갤러리 원본) ----
+// 처리 줄이 빌 때 하나씩(사진이 먼저 뜨게). 4장 넘게 밀리면 처리 줄을 기다리지 않는다(메모리·디스크가 쌓이지 않게)
+const origQ = [];
+const origSet = new Set();
+let origRun = null;
+function queueOriginal(id) {
+  if (origSet.has(id)) return;
+  origSet.add(id); origQ.push(id);
+  kickOriginals();
+}
+function kickOriginals() {
+  if (origRun) return;
+  origRun = runOriginals().finally(() => { origRun = null; if (origQ.length) kickOriginals(); });   // 끝나는 순간 들어온 것까지
+}
+async function runOriginals() {
+  while (origQ.length) {
+    while (queued.size && origQ.length < 4) await lane.catch(() => {});
+    const id = origQ.shift();
+    try { await saveKeptOriginal(id); } catch (e) { console.warn('갤러리 원본 저장 실패', id, e); } finally { origSet.delete(id); }
+  }
+}
+// 원본 줄이 빌 때까지(시험·측정용)
+export const originalsIdle = async () => { while (origRun) await origRun; };
+async function saveKeptOriginal(id) {
+  const fs = await fsMod();
+  const p = store.photo(id);
+  if (!p) { await fs.remove('original', id).catch(() => {}); return; }                    // 그새 영구 삭제
+  if (p.state !== 'ready') return;                                                         // 다시 처리 중 — 끝나면 다시 줄에 선다
+  if (!wantsOriginal(p)) { await fs.remove('original', id).catch(() => {}); return; }      // 이미 넣었거나 갤러리 저장을 껐다
+  const b = await fs.get('original', id);
+  if (!b || !b.size) return;
+  await saveOriginalOf(p, b, p.xform || null);
+  await fs.remove('original', id).catch(() => {});                                         // 실패해도 지운다(original.error — [다시 저장]은 작업본으로)
 }
 
 async function saveOriginalOf(p, raw, xform) {
@@ -102,10 +180,7 @@ async function saveOriginalOf(p, raw, xform) {
   const name = p.original?.name || originalName(p.id, p.takenAt || p.createdAt);
   let bytes = raw;
   try {
-    if (hasXform(xform)) {                                                   // 풀 해상도로 돌리고 잘라 q0.92(설계 비평 7)
-      const img = await decode(raw);
-      try { bytes = canvasToJpeg(transformCanvas(img, xform), 0.92); } finally { img.close?.(); }
-    }
+    if (hasXform(xform)) bytes = await transformFull(raw, xform, 0.92);    // 풀 해상도로 돌리고 잘라 q0.92(설계 비평 7) — 워커에서
   } catch (e) { console.warn('원본 회전 실패 — 돌리지 않은 원본을 넣어요', e); bytes = raw; }
   const r = await native.saveOriginal({ bytes, name, prefer });
   const at = Date.now();
@@ -157,20 +232,26 @@ export async function revive(id, raw, { uri = null } = {}) {
 // ingest(recordId, blob, { source, takenAt, takenAtSource, gps, turns?, aspect?, id?, original?, tempPath? }) → Photo(processing)
 //   원본이 디스크에 안전하게 들어간 뒤 돌아온다(처리는 줄에서 이어짐 — 끝은 store.on 으로 ready/failed 가 알린다).
 //   { wait: true } 면 처리까지 기다려 최종 Photo 를 돌려준다.
-export async function ingest(recordId, blob, { source = 'incam', takenAt, takenAtSource, gps = null, turns, aspect, id, original = null, tempPath = null, wait = false, now = Date.now() } = {}) {
+//   preview: 셔터 순간 그림(Blob | 주소) — 처리하는 동안 preview(photoId) 로 보인다. 없으면 camera.shotInfo(blob).preview
+export async function ingest(recordId, blob, { source = 'incam', takenAt, takenAtSource, gps = null, turns, aspect, id, original = null, tempPath = null, preview: pv = null, wait = false, now = Date.now() } = {}) {
   bump(1);
   let photo;
+  const pid = id || uid('p');
   try {
-    const info = turns != null || aspect != null ? { turns: turns || 0, aspect: aspect || null } : shotInfo(blob);
+    const shot = blob instanceof Blob ? shotInfo(blob) : null;
+    const info = turns != null || aspect != null ? { turns: turns || 0, aspect: aspect || null } : shot;
     const xform = hasXform(info) ? { turns: info.turns || 0, aspect: info.aspect || null } : null;
+    setPreview(pid, pv || shot?.preview || null);                           // 메타가 저장돼 사진 줄에 칸이 생기는 순간 이미 그림이 있게
     const raw = blob instanceof Uint8Array ? blob : new Uint8Array(await blob.arrayBuffer());
-    const pid = id || uid('p');
     const orig = original ? { name: original.name ?? null, savedTo: original.savedTo ?? null, uri: original.uri ?? null, at: now } : null;
     photo = await store.addIncoming(recordId, { id: pid, raw, takenAt: takenAt ?? now, takenAtSource: takenAtSource || (source === 'incam' ? 'camera' : 'file'), source, gps, xform, tempPath, original: orig, now });
     mem.set(pid, { raw, xform, original, tempPath });
     const p = enqueue(pid);
     if (wait) { await p; return store.photo(pid); }
     return photo;
+  } catch (e) {
+    if (!photo) dropPreview(pid);
+    throw e;
   } finally { bump(-1); }
 }
 
@@ -324,6 +405,15 @@ async function recoverNow() {
     // 남은 pendingShot — 이미 들어왔거나 하루 넘게 임시 파일이 안 나타나면 치운다(지금 찍는 중이면 그대로)
     const ps = store.meta('pendingShot', null);
     if (ps && ps.photoId !== sysShot && (store.photo(ps.photoId) || Date.now() - (ps.at || 0) > 864e5)) await clearPending(ps.photoId);
+    // ④ 갤러리에 넣기 전에 앱이 죽어 남은 원본 사본 → 원본 줄로(사진이 아직 처리 중이면 처리가 끝난 뒤 afterReady 가 다시 세운다)
+    try {
+      const fs = await fsMod();
+      for (const oid of await fs.list('original')) {
+        const cur = store.photo(oid);
+        if (!cur) { if (!queued.has(oid)) await fs.remove('original', oid).catch(() => {}); continue; }
+        if (cur.state === 'ready') queueOriginal(oid);
+      }
+    } catch (e) { console.warn('남은 갤러리 원본을 잇지 못했어요', e); }
     retryOriginals().catch(() => {});
   }
   return res;

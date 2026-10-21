@@ -170,23 +170,56 @@ function mount(root, params = {}, nav = {}) {
   }
 
   const thumbCache = new Map();
+  let shownThumbs = 0;
+  // 셔터 즉시 칸 — camera.shoot 의 onPreview(셔터 순간 320px 그림)로 takePhoto·디스크 저장을 기다리지 않고 사진 줄에 먼저 띄운다.
+  // 진짜 칸(같은 takenAt 사진)이 생기거나 저장이 끝나면(실패 포함) 걷는다. 진짜 칸도 pipeline.preview 로 같은 그림을 이어 보인다
+  const pendTiles = new Map();                                              // pressAt → { node, url }
+  function addPendTile(pressAt, blob) {
+    if (dead || pendTiles.has(pressAt) || !blob) return;
+    let url = null;
+    try { url = URL.createObjectURL(blob); } catch { return; }
+    const img = el('img', { class: 'thumb cap-th-img', src: url, alt: '저장 중', draggable: 'false' });
+    const node = el('span', { class: 'cap-th cap-th-pend', 'data-testid': 'strip-pending', 'aria-label': '저장 중' }, img, el('span', { class: 'cap-th-no' }, '…'));
+    pendTiles.set(pressAt, { node, url });
+    paintStrip();
+  }
+  function dropPendTile(pressAt) {
+    const t = pendTiles.get(pressAt);
+    if (!t) return;
+    pendTiles.delete(pressAt);
+    t.node.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(t.url); } catch { /* 이미 해제 */ } }, 1000);
+    if (!dead) paintStrip();
+  }
+  cleanups.push(() => { for (const k of [...pendTiles.keys()]) dropPendTile(k); });
   function paintStrip() {
     const rec = live(recId);
     const ps = rec ? safe(() => store.photosOf(rec.id), []) : [];
     count.textContent = `사진 ${ps.length}장`;
+    if (pendTiles.size) {
+      const have = new Set(ps.map(p => p.takenAt));
+      for (const k of [...pendTiles.keys()]) if (have.has(k)) { const t = pendTiles.get(k); pendTiles.delete(k); setTimeout(() => { try { URL.revokeObjectURL(t.url); } catch { /* 이미 해제 */ } }, 1000); }
+    }
     const keep = new Set();
     const nodes = ps.map((p, i) => {
       const key = p.id;                                                      // thumb 부품이 처리 완료·워터마크 변경을 스스로 다시 그린다
       keep.add(key);
       let node = thumbCache.get(key);
       if (!node) { node = makeThumb(p); thumbCache.set(key, node); }
-      node.querySelector('.cap-th-no').textContent = String(i + 1);
+      const no = node._no || (node._no = node.querySelector('.cap-th-no'));
+      if (no.textContent !== String(i + 1)) no.textContent = String(i + 1);
       return node;
     });
     for (const k of thumbCache.keys()) if (!keep.has(k)) thumbCache.delete(k);
-    const grew = nodes.length > strip.querySelectorAll('[data-testid="strip-thumb"]').length;
+    for (const t of pendTiles.values()) nodes.push(t.node);
+    const kids = strip.children;
+    let same = kids.length === nodes.length && nodes.length > 0;             // 같은 사진·같은 순서면 줄을 건드리지 않는다(store 알림마다 다시 붙이지 않게)
+    for (let i = 0; same && i < nodes.length; i++) if (kids[i] !== nodes[i]) same = false;
+    if (same) return;
+    const grew = nodes.length > shownThumbs;
+    shownThumbs = nodes.length;
     strip.replaceChildren(...(nodes.length ? nodes : [el('span', { class: 'cap-strip-empty' }, '찍은 사진이 여기 보여요')]));
-    if (grew) strip.scrollLeft = strip.scrollWidth;
+    if (grew) requestAnimationFrame(() => { if (!dead) strip.scrollLeft = strip.scrollWidth; });
   }
   function makeThumb(p) {
     const no = el('span', { class: 'cap-th-no' });
@@ -271,30 +304,43 @@ function mount(root, params = {}, nav = {}) {
     try { await store.setSettings({ photoRatio: next }); } catch (err) { console.warn('비율 저장 실패', err); }
   }
 
-  // 방향 — camera.orientation() 을 가볍게 살핀다(계약에 이벤트가 없음)
-  const oTimer = setInterval(() => {
-    const f = fn(camera, 'orientation');
-    const o = f ? (Number(f()) || 0) : 0;
-    if (o !== orient) {
-      orient = o; screen.dataset.o = String(o);
-      screen.style.setProperty('--rot', `${o === 270 ? -90 : o}deg`);       // 아이콘·글자를 세계 기준으로 똑바로(camera: 화면 = 사진을 시계 방향 o 만큼 돌린 것)
-      fit(); drawWm();
-    }
-  }, 300);
-  cleanups.push(() => clearInterval(oTimer));
+  // 방향 — camera.onOrientation(바뀔 때만 알림)을 듣는다. 없으면 1초마다 살핀다(예전 300ms 폴링은 촬영 화면을 계속 깨웠다)
+  function setOrient(o) {
+    o = Number(o) || 0;
+    if (o === orient || dead) return;
+    orient = o; screen.dataset.o = String(o);
+    screen.style.setProperty('--rot', `${o === 270 ? -90 : o}deg`);         // 아이콘·글자를 세계 기준으로 똑바로(camera: 화면 = 사진을 시계 방향 o 만큼 돌린 것)
+    fit(); drawWm();
+  }
+  const readOrient = () => { const f = fn(camera, 'orientation'); return f ? safe(() => f(), 0) : 0; };
+  if (fn(camera, 'onOrientation')) {
+    const offO = safe(() => camera.onOrientation(setOrient), null);
+    if (offO) cleanups.push(offO);
+  } else {
+    const oTimer = setInterval(() => setOrient(readOrient()), 1000);
+    cleanups.push(() => clearInterval(oTimer));
+  }
 
   // ---------- 워터마크 미리보기 띠(사진의 아래쪽에, 같은 layout 함수) ----------
   const mctx = document.createElement('canvas').getContext('2d');
   const measure = (t, px, bold) => { mctx.font = wmFont(px, bold); return mctx.measureText(t).width; };
+  // 글·크기·방향이 같으면 다시 그리지 않는다(30초 시계·store 알림·크기 알림이 겹쳐도 한 번). canvas 크기는 바뀔 때만 다시 잡는다
+  let wmKeyNow = '';
   function drawWm() {
     if (dead) return;
     const s = safe(() => store.settings(), {});
     const on = fn(render, 'screenWatermark') ? safe(() => render.screenWatermark(), false) : (s.wmMode !== 'off' && s.wmOnScreen !== false);
     const cw = vf.clientWidth, ch = vf.clientHeight;
     wmCanvas.hidden = !on || !cw || !ch || camFailed;
-    if (wmCanvas.hidden) return;
+    if (wmCanvas.hidden) { wmKeyNow = ''; return; }
     const dpr = Math.min(3, window.devicePixelRatio || 1);
-    wmCanvas.width = Math.round(cw * dpr); wmCanvas.height = Math.round(ch * dpr);
+    const lines = watermarkLines({ location: loc || '', content: content || '' }, { takenAt: Date.now(), takenAtSource: 'camera' }, wmOpts(s));
+    const key = `${cw}x${ch}@${dpr}|${orient}|${lines.join('\n')}`;
+    if (key === wmKeyNow) return;
+    wmKeyNow = key;
+    const pw = Math.round(cw * dpr), ph = Math.round(ch * dpr);
+    if (wmCanvas.width !== pw) wmCanvas.width = pw;
+    if (wmCanvas.height !== ph) wmCanvas.height = ph;
     const ctx = wmCanvas.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, wmCanvas.width, wmCanvas.height);
@@ -302,7 +348,6 @@ function mount(root, params = {}, nav = {}) {
     const worldW = side ? ch : cw, worldH = side ? cw : ch;                 // 사진(세계 기준) 크기
     const k = 1600 / Math.max(worldW, worldH);                               // 작업본 크기로 배치를 계산해 축소(WYSIWYG)
     const Wk = worldW * k, Hk = worldH * k;
-    const lines = watermarkLines({ location: loc || '', content: content || '' }, { takenAt: Date.now(), takenAtSource: 'camera' }, wmOpts(s));
     if (!lines.length) return;
     const lay = watermarkLayout(Wk, Hk, lines, measure);
     const rot = orient * Math.PI / 180;                                      // 화면 = 사진을 시계 방향 o 만큼 돌린 것(camera.js 약속) → 띠가 사진의 아래쪽에
@@ -326,7 +371,7 @@ function mount(root, params = {}, nav = {}) {
   }
   function hideFallback() {
     camFailed = false; fallback.hidden = true; video.hidden = false; ratioBtn.hidden = false;
-    drawWm();
+    wmKeyNow = ''; drawWm();
   }
 
   async function openCam(userRetry = false) {
@@ -455,17 +500,20 @@ function mount(root, params = {}, nav = {}) {
     const fix = safe(() => gps.fixForPhoto(pressAt), null);
     try {
       const recP = ensureRecord();
-      const shot = await camera.shoot({ ratio });
+      let shot;
+      try { shot = await camera.shoot({ ratio, onPreview: blob => addPendTile(pressAt, blob) }); }
+      catch (e) { dropPendTile(pressAt); throw e; }
       const rec = await recP;
-      if (!shot) return;                                                     // 앞 셔터가 아직 도는 중(camera 가 무시)
+      if (!shot) { dropPendTile(pressAt); return; }                         // 앞 셔터가 아직 도는 중(camera 가 무시)
       const st = { settled: false };
       shots.set(pressAt, st);
       const opts = { source: 'incam', takenAt: pressAt, takenAtSource: 'camera', gps: fix };
       if (shot.turns != null) opts.turns = shot.turns;
       if (shot.aspect != null) opts.aspect = shot.aspect;
+      if (shot.preview) opts.preview = shot.preview;                         // 처리하는 동안 썸네일이 셔터 순간 그림을 보인다
       pipeline.ingest(rec.id, shot.blob, opts)
         .catch(err => { console.error('사진 처리 실패', err); dom.toast?.(saveErrText(err)); })
-        .finally(() => { st.settled = true; });
+        .finally(() => { st.settled = true; dropPendTile(pressAt); });
       freshHint = false; params.freshHint = false;
       store.setMeta('lastShotAt', pressAt)?.catch?.(() => {});
       paintLoc();
@@ -529,13 +577,14 @@ function mount(root, params = {}, nav = {}) {
     if (v == null || dead) return;
     const text = String(v).trim();
     loc = text; freshHint = false; params.freshHint = false;
+    paintLoc(); drawWm();                                                    // 확인을 누르면 바로 보인다 — 저장(아래)은 뒤에서
     try {
       if (live(recId)) await store.updateRecord(recId, { location: text }, Date.now());
       else params.draftLoc = text;
       if (!continuing) await store.setLastLocation(text, Date.now());       // 이어 찍기(옛 묶음)에서는 이어받기 값을 바꾸지 않는다
       if (!continuing) await store.setMeta('lastShotAt', Date.now());       // 위치를 확인했으니 10분 강조를 끈다
     } catch (err) { console.error('위치 저장 실패', err); dom.toast?.('위치를 저장하지 못했어요'); }
-    paintLoc(); drawWm(); paintStrip();
+    if (!dead) paintLoc();
   }
 
   async function editContent() {
@@ -543,11 +592,11 @@ function mount(root, params = {}, nav = {}) {
     if (v == null || dead) return;
     const text = String(v).trim();
     content = text;
+    paintContent(); drawWm();                                                // 확인을 누르면 바로 보인다 — 저장은 뒤에서
     try {
       if (live(recId)) await store.updateRecord(recId, { content: text }, Date.now());
       else params.draftContent = text;
     } catch (err) { console.error('내용 저장 실패', err); dom.toast?.('내용을 저장하지 못했어요'); }
-    paintContent(); drawWm(); paintStrip();
   }
 
   async function saveAndNext() {
@@ -669,7 +718,8 @@ function mount(root, params = {}, nav = {}) {
           ic('doc'), el('span', { class: 'cap-docs-name' }, d.name), el('small', {}, sub)))
         : [el('p', { class: 'note' }, q ? '찾는 자료가 없어요' : '자료함에 올린 자료가 없어요')]));
     };
-    input.addEventListener('input', paint);
+    let qRaf = 0;
+    input.addEventListener('input', () => { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; paint(); }); });   // 한 그림에 한 번
     paint();
     closeSheet = dom.openSheet(close => el('div', { class: 'cap-docs-sheet' },
       el('h2', { class: 'sheet-title' }, '띄울 자료'), input, list,
@@ -713,8 +763,10 @@ function mount(root, params = {}, nav = {}) {
   }
 
   // ---------- 구독·수명 ----------
+  // store 알림 — 이 묶음·설정·lastShotAt 이 바뀐 때만 그 부분만(사진 처리 중에는 알림이 잦다: 저장·처리 끝·갤러리 원본마다)
   const offStore = safe(() => store.on(ch => {
     if (dead) return;
+    let strip = false, text = false;
     if (ch?.settings) {
       const s = safe(() => store.settings(), {});
       if (s.photoRatio && s.photoRatio !== ratio) { ratio = s.photoRatio; paintRatio(); fit(); }
@@ -724,10 +776,12 @@ function mount(root, params = {}, nav = {}) {
       const r = store.record(recId);
       if (!r || r.deletedAt) { recId = null; params.current = null; createdHere = false; }
       else { loc = r.location; content = r.content; }
-      drawWm();
+      drawWm(); strip = true; text = true;
     }
-    if (ch?.meta?.has?.('lastShotAt')) paintLoc();
-    paintAll();
+    if (!strip && recId && ch?.photos?.size) { for (const pid of ch.photos) if (store.photo(pid)?.recordId === recId) { strip = true; break; } }
+    if (ch?.meta?.has?.('lastShotAt')) text = true;
+    if (text) { paintLoc(); paintContent(); }
+    if (strip) paintStrip();
   }), null);
   if (offStore) cleanups.push(offStore);
   const offPend = fn(pipeline, 'onPending') ? safe(() => pipeline.onPending(paintPending), null) : null;
@@ -742,6 +796,7 @@ function mount(root, params = {}, nav = {}) {
   cleanups.push(() => document.removeEventListener('visibilitychange', onVis));
 
   paintRatio(); paintAll();
+  setOrient(readOrient());                                                   // 지금 방향(아래 선언이 다 끝난 뒤에)
   requestAnimationFrame(fit);
   openCam();
   initDocs();

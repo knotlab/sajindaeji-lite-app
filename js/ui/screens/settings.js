@@ -124,7 +124,7 @@ function textField(testid, label, key, { placeholder = '', hint = null, type = '
     wanted = v;
     save({ [key]: v });
   };
-  const later = () => { clearTimeout(timer); timer = setTimeout(commit, 400); };
+  const later = () => { clearTimeout(timer); timer = setTimeout(commit, 1500); };   // 쓰는 도중에는 저장(→ 화면 다시 그리기)하지 않는다 — 손을 멈추거나 칸을 떠나면(blur·Enter) 저장
   input.addEventListener('focus', () => { focused = true; });
   input.addEventListener('blur', () => { focused = false; commit(); });
   input.addEventListener('compositionstart', () => { composing = true; });
@@ -241,7 +241,15 @@ export default {
 
     // 2. 워터마크
     const preview = h('canvas', { class: 'st-preview', 'data-testid': 'wm-preview', 'aria-label': '워터마크 미리보기' });
-    const repaintPreview = () => { if (!dead) drawPreview(preview); };
+    let previewKey = '';
+    const repaintPreview = () => {                                          // 미리보기에 쓰는 값이 바뀐 때만 다시 그린다(현장명·키를 쓰는 동안은 그대로)
+      if (dead) return;
+      const s = S();
+      const k = JSON.stringify([s.wmMode, s.wmDate, s.photoRatio, store.lastLocation?.() || '']);
+      if (k === previewKey) return;
+      previewKey = k;
+      drawPreview(preview);
+    };
     const wmSeg = seg('set-wm-mode', [
       { value: 'off', label: '끄기' }, { value: 'loc', label: '위치만' }, { value: 'loc+content', label: '위치+내용' },
     ], () => S().wmMode, v => save({ wmMode: v }));
