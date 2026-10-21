@@ -1,0 +1,56 @@
+/* 내보내기(H) — 화면 전용만. 토큰·공통 부품(.bar .icbtn .primary .secondary .dock .note .input)은 app.css. 클래스는 xp- 로 시작 */
+.scr-export,.scr-export *{box-sizing:border-box}
+/* 통합: .screen 이 이미 좌우 16px — 두 번 들이지 않는다. 세로 flex 로 채워 .dock 이 맨 아래(엄지 영역)에 붙게 */
+.scr-export{flex:1 0 auto;display:flex;flex-direction:column}
+.xp-wrap{padding:0 0 16px}
+.xp-note{margin-top:0}
+.xp-chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.xp-chip{min-height:44px;padding:0 16px;border:1px solid var(--soft);border-radius:22px;background:var(--paper);font:inherit;font-size:15px;font-weight:700;color:var(--ink)}
+.xp-chip[aria-pressed="true"]{border:2px solid var(--ink);padding:0 15px;background:var(--ink);color:var(--paper)}
+.xp-chip[aria-pressed="true"]::before{content:"✓ "}
+.xp-custom{display:flex;align-items:center;gap:8px;margin:8px 0}
+.xp-custom[hidden]{display:none}
+.xp-date{flex:1 1 0;min-width:0;min-height:48px;padding:0 8px;border:1px solid var(--soft);border-radius:10px;background:var(--paper);font:inherit;font-size:16px;color:var(--ink)}
+.xp-tilde{flex:none;color:var(--ink2);font-weight:700}
+
+.xp-card{margin-top:8px;padding:12px 16px;border:1px solid var(--soft);border-radius:12px;background:var(--paper)}
+.xp-range{margin:0 0 8px;font-size:17px;font-weight:800}
+.xp-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.xp-num{display:flex;align-items:baseline;gap:4px}
+.xp-num b{font-size:22px;font-weight:900}
+.xp-num span{font-size:14px;color:var(--ink2);font-weight:700}
+.xp-wm{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--concrete);font-size:14px;color:var(--ink2)}
+.xp-link{min-height:44px;padding:0 4px;border:0;background:none;font:inherit;font-size:14px;font-weight:700;color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+
+.xp-warns{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.xp-warns:empty{display:none}
+.xp-warn{margin:0;padding:8px 12px;border-left:4px solid var(--hivis);border-radius:8px;background:var(--hivis-tint);font-size:14px;font-weight:700;color:var(--ink)}
+.xp-warn-btn{display:flex;align-items:center;gap:8px;width:100%;min-height:48px;border-top:0;border-right:0;border-bottom:0;font:inherit;font-size:14px;font-weight:700;text-align:left}
+.xp-warn-btn > span:first-child{flex:1}
+.xp-fix{text-decoration:underline;text-underline-offset:3px}
+.xp-warn-btn .ic{width:18px;height:18px;color:var(--ink2)}
+.xp-empty{margin:8px 0 0;font-size:14px;color:var(--ink2)}
+
+.xp-progress{margin-top:12px}
+.xp-progress[hidden]{display:none}
+.xp-bar{height:8px;border-radius:4px;background:var(--soft);overflow:hidden}
+.xp-bar-fill{height:100%;width:0;background:var(--ink);transition:width .15s}
+.xp-progress-text{margin:6px 0 0;font-size:14px;font-weight:700;color:var(--ink2)}
+
+.xp-result-box:empty{display:none}
+.xp-result{margin-top:12px;padding:12px 16px;border:1px solid var(--soft);border-radius:12px;background:var(--paper)}
+.xp-result-head{display:flex;align-items:center;gap:12px}
+.xp-result-head > .ic{flex:none;width:28px;height:28px}
+.xp-result-text{flex:1;min-width:0;display:flex;flex-direction:column}
+.xp-file-name{font-size:16px;font-weight:800;overflow-wrap:anywhere}
+.xp-file-meta{font-size:14px;color:var(--ink2)}
+.xp-result-btns{display:flex;gap:8px;margin-top:12px}
+.scr-export .xp-act{flex:1;width:auto;min-height:48px;font-size:16px;border-radius:12px}
+.xp-hint{margin:8px 0 0;font-size:13px;color:var(--ink2)}
+.xp-error{margin:12px 0 0;font-size:14px;font-weight:700;color:var(--fail)}
+
+.scr-export .xp-build{display:flex;align-items:center;justify-content:center;gap:8px;min-height:56px}
+.scr-export .xp-build:disabled{opacity:.45}
+.xp-build .ic{width:22px;height:22px}
+
+@media (prefers-reduced-motion:reduce){.xp-bar-fill{transition:none}}

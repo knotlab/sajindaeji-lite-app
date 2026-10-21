@@ -1,0 +1,86 @@
+/* 자료함·자료 보기·docFrame(J) — 화면 전용만. 토큰·공통 부품(.bar .icbtn .barlink .primary .secondary .textbtn .rows .row .sec .note .chip)은 app.css */
+
+/* ---- docFrame(자료 보기·촬영 화면 공용). 크기·위치는 부모가 정한다(촬영 화면은 capture.css 에서 CSS 로만 바꾼다) ---- */
+.docframe{position:relative;width:100%;height:100%;min-height:0;overflow:hidden;background:#fff}
+.df-frame{position:absolute;inset:0;display:block;width:100%;height:100%;border:0;background:#fff}
+.df-note{position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--concrete);text-align:center;font-size:15px;font-weight:700;line-height:1.5;color:var(--ink2)}
+.df-note[hidden]{display:none}
+.df-shield{position:absolute;inset:0;z-index:2;background:transparent;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.df-shield[hidden]{display:none}
+.docframe.df-passive .df-frame{pointer-events:none}
+.df-hint{position:absolute;left:0;right:0;bottom:0;z-index:3;padding:6px 8px;font-size:13px;font-weight:700;line-height:1.4;background:rgba(0,0,0,.78);color:#fff;pointer-events:none}
+.df-hint[hidden]{display:none}
+
+/* ---- 자료함 ---- */
+.dx-page{padding:0 0 calc(48px + env(safe-area-inset-bottom))}
+.dx-search{display:flex;align-items:center;gap:4px;min-height:48px;padding:0 0 0 12px;background:var(--paper);border:1px solid var(--soft);border-radius:12px}
+.dx-search[hidden]{display:none}
+.dx-search:focus-within{border-color:var(--ink)}
+.dx-search>.ic{color:var(--ink2);width:20px;height:20px}
+.dx-search input{flex:1;min-width:0;height:46px;border:0;outline:0;background:none;font:inherit;font-size:16px;color:var(--ink)}
+.dx-search input::placeholder{color:#6B7076}
+.dx-search input::-webkit-search-cancel-button{display:none}
+.dx-clear{width:44px;height:44px;color:var(--ink2)}
+.dx-clear[hidden]{display:none}
+
+.dx-reco{margin-top:12px;background:var(--hivis-tint);border:1px solid var(--hivis);border-radius:12px;padding:8px 8px 4px 16px}
+.dx-reco[hidden]{display:none}
+.dx-reco h3{font-size:14px;font-weight:800;margin:4px 0 0}
+.dx-reco .dx-row{border-top:1px solid #E8DCA8}
+.dx-reco .dx-row:first-of-type{border-top:0}
+.dx-reco .dx-open{padding-left:0}
+.dx-dist{font-size:14px;font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums}
+
+.dx-chips{margin-top:12px}
+.dx-chips[hidden]{display:none}
+.dx-chips .chip{min-height:44px;padding:0 14px;font-size:15px}
+
+.dx-list .sec{margin:20px 0 8px}
+.dx-row{display:flex;align-items:center;gap:0;border-top:1px solid var(--soft)}
+.rows>.dx-row:first-child{border-top:0}
+.dx-open{flex:1;min-width:0;display:flex;align-items:center;gap:12px;min-height:64px;padding:10px 4px 10px 16px;border:0;background:none;text-align:left;color:var(--ink)}
+.dx-open .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.dx-name{font-size:16px;font-weight:800;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.dx-open .s{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:13px;color:var(--ink2)}
+.dx-menu{color:var(--ink2);margin-right:4px}
+.docico{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;background:var(--concrete);color:var(--ink);flex:none}
+.docico .ic{width:22px;height:22px}
+.docico.k-pdf{color:var(--fail)}
+.docico.k-sheet{color:var(--pass)}
+.docico.k-drawing{color:var(--info)}
+.dx-mini{display:inline-flex;align-items:center;height:22px;padding:0 6px;border:1px solid var(--soft);border-radius:5px;font-size:13px;font-weight:700;color:var(--ink2);background:var(--paper)}
+.dx-anch{display:inline-flex;align-items:center;gap:2px;font-weight:700;color:var(--ink)}
+.dx-anch .ic{width:16px;height:16px}
+
+.dx-empty{margin-top:24px;padding:24px 16px;background:var(--paper);border-radius:12px;text-align:center;display:grid;justify-items:center;gap:8px}
+.dx-empty p{margin:0;font-size:16px;font-weight:700;line-height:1.5}
+.dx-empty .note{font-weight:400;font-size:14px}
+.dx-bigico{width:56px;height:56px}
+.dx-bigico .ic{width:32px;height:32px}
+.dx-emptybtn{margin-top:8px;min-height:52px;max-width:280px}
+
+/* 시트 안 */
+.dx-sheettext{font-size:16px;line-height:1.5;margin:0 0 8px}
+.dx-prog{height:8px;border-radius:4px;background:var(--concrete);overflow:hidden;margin:8px 0}
+.dx-prog[hidden]{display:none}
+.dx-prog i{display:block;height:100%;width:0;background:var(--ink);transition:width .15s}
+.dx-progtext{font-size:14px;color:var(--ink2);margin:4px 0 12px;font-variant-numeric:tabular-nums}
+.dx-trash{max-height:50vh;overflow:auto;margin-bottom:8px}
+.dx-trow{gap:8px;min-height:64px;padding:8px 8px 8px 16px}
+.dx-trow .body{flex:1;min-width:0;display:flex;flex-direction:column}
+.dx-trow .s{font-size:13px;color:var(--ink2)}
+.dx-small{min-height:44px;padding:0 12px;border:1px solid var(--soft);border-radius:10px;background:var(--paper);font-size:14px;font-weight:800;color:var(--ink);flex:none}
+.dx-danger{color:var(--fail)}
+.dx-pad{padding:16px}
+
+/* ---- 자료 보기 ---- */
+.dv-page{position:fixed;inset:0;max-width:440px;margin:0 auto;display:flex;flex-direction:column;background:var(--concrete);padding-top:env(safe-area-inset-top)}
+.screen > .dv-page:first-child{margin-top:0}   /* 통합: app.css 의 첫 자식 위 여백이 고정 화면을 8px 밀어내던 것 */
+.dv-bar{flex:none;margin:0;padding:0 4px;min-height:56px;background:var(--paper);border-bottom:1px solid var(--soft)}
+.dv-title{font-size:17px}
+.dv-pin.on{color:var(--ink);background:var(--hivis-tint)}
+.dv-pin.on .ic{stroke-width:2.6}
+.dv-stage{position:relative;flex:1;min-height:0}
+.dv-capture{position:absolute;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:3;width:auto;min-height:52px;padding:0 20px 0 16px;display:inline-flex;align-items:center;gap:8px;font-size:16px;box-shadow:0 4px 14px rgba(0,0,0,.28)}
+.dv-capture[hidden]{display:none}
+@media (prefers-reduced-motion:reduce){.dx-prog i{transition:none}}

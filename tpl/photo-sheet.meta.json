@@ -1,0 +1,84 @@
+{
+ "styles": {
+  "content": {
+   "9": 20,
+   "10": 19,
+   "11": 18
+  },
+  "ledgerHead": 21,
+  "ledgerCenter": 22,
+  "ledgerLeft": 23,
+  "ledgerDateTime": 24,
+  "colDefault": 1
+ },
+ "page": {
+  "rows": 8,
+  "colWidths": [
+   10.59765625,
+   43.59765625,
+   10.59765625,
+   15.59765625
+  ],
+  "rowHeights": [
+   45.6,
+   273,
+   33,
+   33,
+   45.6,
+   273,
+   33,
+   33
+  ],
+  "merges": [
+   "A1:D1",
+   "A2:D2",
+   "B4:D4",
+   "A5:D5",
+   "A6:D6",
+   "B8:D8"
+  ],
+  "pageMargins": "<pageMargins left=\"0.9055118110236221\" right=\"0.70866141732283472\" top=\"0.74803149606299213\" bottom=\"0.74803149606299213\" header=\"0.31496062992125984\" footer=\"0.31496062992125984\"/>",
+  "pageSetup": "<pageSetup paperSize=\"9\" scale=\"94\" orientation=\"portrait\"/>"
+ },
+ "ledger": {
+  "head": [
+   "관리번호",
+   "일시",
+   "작성자",
+   "유형",
+   "위치",
+   "동",
+   "층",
+   "공종",
+   "내용",
+   "사진 수",
+   "보냄 상태",
+   "대표 사진"
+  ],
+  "widths": [
+   13,
+   17,
+   9,
+   9,
+   24,
+   6,
+   6,
+   10,
+   46,
+   7,
+   12,
+   22
+  ],
+  "headHeight": 24,
+  "rowHeight": 96
+ },
+ "sheets": {
+  "names": [
+   "사진대지",
+   "대장"
+  ],
+  "photoIdx": 0,
+  "photoFile": "xl/worksheets/sheet1.xml",
+  "ledgerFile": "xl/worksheets/sheet2.xml"
+ }
+}

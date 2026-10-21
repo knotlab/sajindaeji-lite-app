@@ -1,0 +1,15 @@
+/* 날짜(F) — 화면 전용만 */
+.day-nav{position:relative;display:flex;align-items:center;gap:8px;margin:0 0 8px}
+.day-nav-btn,.day-nav-cal{display:flex;align-items:center;justify-content:center;gap:4px;min-height:44px;padding:0 8px;border:1px solid var(--soft);border-radius:10px;background:var(--paper);font-size:15px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.day-nav-btn{flex:1;min-width:0}
+.day-nav-btn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.day-nav-btn:disabled{color:var(--ink2);background:transparent;border-style:dashed;cursor:default}
+.day-nav-cal{flex:none;padding:0 12px}
+.day-nav .ic{width:20px;height:20px}
+/* 좁은 폭: 날짜 고르기는 아이콘 정사각만 — 이전/다음 날짜 글자가 잘리지 않게 */
+@media (max-width:380px){.day-nav-cal span{display:none}.day-nav-cal{width:48px;padding:0}}
+.day-sum{font-size:15px;font-weight:800;color:var(--ink2);margin:16px 0 8px}
+
+.day-empty{font-size:15px;color:var(--ink2);padding:16px;background:var(--paper);border-radius:12px;margin:0}
+.day-empty[hidden]{display:none}
+.day-add{display:flex;align-items:center;justify-content:center;gap:8px}

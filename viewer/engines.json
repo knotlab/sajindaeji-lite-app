@@ -1,0 +1,409 @@
+{
+ "viewer": "1.0.0",
+ "pdfjs": "6.4.299",
+ "mainBytes": 31429267,
+ "files": [
+  {
+   "url": "https://cdn.jsdelivr.net/npm/cfb@1.2.2/dist/cfb.min.js",
+   "group": "공통(압축·OLE)",
+   "main": true,
+   "bytes": 34209
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js",
+   "group": "공통(압축·OLE)",
+   "main": true,
+   "bytes": 97630
+  },
+  {
+   "url": "https://fonts.googleapis.com/css2?family=Hahmlet:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap",
+   "group": "뷰어 글꼴",
+   "main": true,
+   "bytes": 359070
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.bare.min.js",
+   "group": "엑셀",
+   "main": true,
+   "bytes": 862631
+  },
+  {
+   "url": "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js",
+   "group": "엑셀",
+   "main": true,
+   "bytes": 951904
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js",
+   "group": "워드",
+   "main": true,
+   "bytes": 75527
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/mammoth@1.13.0/mammoth.browser.min.js",
+   "group": "워드",
+   "main": true,
+   "bytes": 405060
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/@rhwp/core@0.8.7/rhwp_bg.wasm",
+   "group": "한글(HWP)",
+   "main": true,
+   "bytes": 11821756
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/@rhwp/core@0.8.7/rhwp.js",
+   "group": "한글(HWP)",
+   "main": true,
+   "bytes": 454520
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.17/+esm",
+   "group": "DWG 도면",
+   "main": true,
+   "bytes": 220906
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.17/wasm/libredwg-web.wasm",
+   "group": "DWG 도면",
+   "main": true,
+   "bytes": 10816837
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/build/pdf.min.mjs",
+   "group": "PDF",
+   "main": true,
+   "bytes": 458904
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/build/pdf.worker.min.mjs",
+   "group": "PDF",
+   "main": true,
+   "bytes": 1264342
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/Adobe-Korea1-0.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 241
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/Adobe-Korea1-1.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 386
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/Adobe-Korea1-2.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 391
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/Adobe-Korea1-UCS2.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 23293
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-EUC-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 1848
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-EUC-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 164
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 1831
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-Johab-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 16791
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-Johab-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 166
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSC-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 160
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCms-UHC-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 2787
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCms-UHC-HW-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 2789
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCms-UHC-HW-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 169
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCms-UHC-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 166
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCpc-EUC-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 2024
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/KSCpc-EUC-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 166
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UCS2-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 25783
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UCS2-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 178
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF16-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 26327
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF16-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 164
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF32-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 26451
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF32-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 168
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF8-H.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 27790
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/cmaps/UniKS-UTF8-V.bcmap",
+   "group": "PDF",
+   "main": true,
+   "bytes": 169
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitDingbats.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 29513
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitFixed.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 17597
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitFixedBold.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 18055
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitFixedBoldItalic.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 19151
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitFixedItalic.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 18746
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitSerif.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 19469
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitSerifBold.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 19395
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitSerifBoldItalic.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 20733
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitSerifItalic.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 21227
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/FoxitSymbol.pfb",
+   "group": "PDF",
+   "main": true,
+   "bytes": 16729
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/LiberationSans-Bold.ttf",
+   "group": "PDF",
+   "main": true,
+   "bytes": 137052
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/LiberationSans-BoldItalic.ttf",
+   "group": "PDF",
+   "main": true,
+   "bytes": 135124
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/LiberationSans-Italic.ttf",
+   "group": "PDF",
+   "main": true,
+   "bytes": 162036
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/standard_fonts/LiberationSans-Regular.ttf",
+   "group": "PDF",
+   "main": true,
+   "bytes": 139512
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/wasm/jbig2.wasm",
+   "group": "PDF",
+   "main": true,
+   "bytes": 103671
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/wasm/openjpeg.wasm",
+   "group": "PDF",
+   "main": true,
+   "bytes": 251131
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/wasm/qcms_bg.wasm",
+   "group": "PDF",
+   "main": true,
+   "bytes": 96589
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/rtf.js@3.0.9/dist/EMFJS.bundle.min.js",
+   "group": "RTF",
+   "main": true,
+   "bytes": 56032
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/rtf.js@3.0.9/dist/RTFJS.bundle.min.js",
+   "group": "RTF",
+   "main": true,
+   "bytes": 2108098
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/rtf.js@3.0.9/dist/WMFJS.bundle.min.js",
+   "group": "RTF",
+   "main": true,
+   "bytes": 55709
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+   "group": "3D·IFC",
+   "main": false,
+   "bytes": 662772
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/cad-preview@0.2.0/+esm",
+   "group": "도면 미리보기 그림",
+   "main": false,
+   "bytes": 11367
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js",
+   "group": "사진(HEIC·TIFF)",
+   "main": false,
+   "bytes": 75848
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/libheif-js@1.23.5/libheif-wasm/libheif-bundle.js",
+   "group": "사진(HEIC·TIFF)",
+   "main": false,
+   "bytes": 2044206
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/pako@3.0.2/dist/browser/pako.umd.min.js",
+   "group": "사진(HEIC·TIFF)",
+   "main": false,
+   "bytes": 45440
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/utif2@4.1.0/UTIF.js",
+   "group": "사진(HEIC·TIFF)",
+   "main": false,
+   "bytes": 95737
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js",
+   "group": "엑셀(예비)",
+   "main": false,
+   "bytes": 881727
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/dompurify@3.4.16/+esm",
+   "group": "코드·마크다운",
+   "main": false,
+   "bytes": 29401
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/highlight.js@11.12.0/lib/common/+esm",
+   "group": "코드·마크다운",
+   "main": false,
+   "bytes": 165289
+  },
+  {
+   "url": "https://cdn.jsdelivr.net/npm/marked@18.1.0/+esm",
+   "group": "코드·마크다운",
+   "main": false,
+   "bytes": 46260
+  }
+ ]
+}
