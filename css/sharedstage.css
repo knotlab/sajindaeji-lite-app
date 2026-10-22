@@ -1,0 +1,90 @@
+/* 같은 자리(widgets/sharedstage.js) — 도면 층(아래, 늘 살아 있음) + 카메라 층(위, video + 카메라 문). 상태는 data-mode(drawing|opening|camera|closing).
+   움직임은 opacity·transform(+visibility)만 — 레이아웃 없음. 떠오르기 120ms, 닫기: 문 200ms + 120ms 부터 층 흐려지기 140ms(합 260ms).
+   크기 기준(CLAUDE.md): [도면] 칩 44px(아이콘+글자 15px), 셔터 자리 [카메라] 72px(셔터와 같은 자리·크기), 자동 돌아가기 막대 3px. */
+.sstage{
+  --ss-in:120ms; --ss-out:140ms; --ss-out-delay:120ms;
+  position:absolute;inset:0;overflow:hidden;background:#1A1C1B;
+  contain:layout paint style;isolation:isolate;
+}
+.ss-draw,.ss-cam{position:absolute;inset:0;overflow:hidden}
+.ss-draw{z-index:0}
+.ss-draw > *{position:absolute;inset:0;width:auto;height:auto}
+/* 촬영 화면의 도면 상자(.cap-docwrap)를 그대로 넣을 때 — 작은 창 테두리·자리 옮기기 움직임 없이 층 전체로(자리는 placeDoc 대신 여기서) */
+.ss-draw > .cap-docwrap{left:0;top:0;right:0;bottom:0;width:auto;height:auto;border:0;border-radius:0;transition:none;z-index:0}
+/* 띄운 도면이 없을 때 — 무엇을 하면 되는지 한 줄 + [도면 고르기] */
+.ss-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;text-align:center;color:#fff;background:#1A1C1B}
+.ss-empty[hidden]{display:none}
+.ss-empty p{margin:0;font-size:15px;font-weight:700;color:var(--dark-ink2,#C9CCC8)}
+.ss-empty-btn{display:inline-flex;align-items:center;gap:8px;min-height:48px;padding:0 18px;border-radius:12px;
+  background:var(--dark-2,#1E211F);color:#fff;border:1px solid var(--dark-line,#5A5F5C);font-size:16px;font-weight:800;touch-action:manipulation}
+.ss-empty-btn:active{transform:scale(.97)}
+
+/* 카메라 층 — 도면 위. 감춰져 있을 땐 그리지도 손을 받지도 않는다 */
+.ss-cam{
+  z-index:1;background:#000;will-change:opacity;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity var(--ss-in) ease-out,visibility 0s var(--ss-in);
+}
+.ss-cam > .cap-vf,.ss-cam > video{position:absolute;inset:0}
+.ss-cam > video{display:block;width:100%;height:100%;object-fit:cover;background:#1A1C1B}
+.sstage[data-mode="opening"] .ss-cam,
+.sstage[data-mode="camera"] .ss-cam{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--ss-in) ease-out,visibility 0s 0s}
+/* 닫는 중: 손은 곧바로 도면으로(카메라 층은 탭을 받지 않음), 문이 거의 닫힐 즈음 층이 흐려진다 */
+.sstage[data-mode="closing"] .ss-cam{opacity:0;visibility:visible;pointer-events:none;
+  transition:opacity var(--ss-out) ease-in var(--ss-out-delay),visibility 0s calc(var(--ss-out) + var(--ss-out-delay))}
+/* 카메라 문·비율·플래시 버튼처럼 pointer-events 를 스스로 정한 자식도 손을 놓게(부모 값을 덮어써 도면 위에서 탭을 가로채지 않게).
+   visibility 는 건드리지 않는다 — 카메라 문이 닫힌 채(visible) 기다려야 따뜻한 카메라에서도 문 열리는 움직임이 보인다(층은 opacity 0 이라 안 보임) */
+.sstage[data-mode="drawing"] .ss-cam *,
+.sstage[data-mode="closing"] .ss-cam *{pointer-events:none !important}
+/* 카메라가 보이는 동안 도면은 손을 받지 않는다(확대·이동 상태는 그대로 — DOM 도 그대로) */
+.sstage[data-mode="opening"] .ss-draw,
+.sstage[data-mode="camera"] .ss-draw{pointer-events:none}
+
+/* [도면] 칩 — 카메라 층 아래 가운데(비율·플래시 버튼이 도는 네 모서리와 겹치지 않게). 문이 열린 뒤에만 */
+.ss-drawbtn{
+  position:absolute;left:50%;bottom:10px;z-index:7;
+  display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px 0 12px;border-radius:22px;
+  background:rgba(0,0,0,.62);color:#fff;border:1px solid rgba(255,255,255,.28);font-size:15px;font-weight:800;line-height:1;
+  transform:translateX(-50%) scale(1);opacity:0;visibility:hidden;touch-action:manipulation;
+  transition:opacity .15s ease-out,visibility 0s .15s;
+}
+.sstage[data-mode="camera"][data-door="open"] .ss-drawbtn{opacity:1;visibility:visible;transition:opacity .15s ease-out .1s,visibility 0s}
+.ss-drawbtn:active{transform:translateX(-50%) scale(.96)}
+.ss-drawbtn .ic{flex:none}
+/* 문 가운데 [카메라 열기]는 쓰지 않는다 — 셔터 자리 [카메라]가 같은 일을 한다(닫히는 중에 다시 떠올라 헷갈리지 않게). 실패 때 [다시 열기]는 그대로 */
+.sstage .camdoor .cd-open{display:none}
+
+/* 자동 돌아가기 — 아래 가장자리 3px 막대가 줄어든다(transform 만). 재는 중일 때만 */
+.ss-bar{position:absolute;left:0;right:0;bottom:0;height:3px;z-index:8;pointer-events:none;
+  background:rgba(0,0,0,.35);opacity:0;transition:opacity .15s ease-out}
+.ss-bar-fill{position:absolute;inset:0;background:rgba(255,255,255,.9);transform-origin:0 50%;transform:scaleX(1);will-change:transform}
+.sstage[data-auto="1"] .ss-bar{opacity:1}
+
+/* 셔터 자리(.cap-ctrl 가운데 칸) — 셔터와 [카메라]를 한 칸에 겹쳐 둔다(72px 같은 크기 → 아래 줄이 안 움직인다) */
+.ss-slot{display:grid;place-items:center;width:72px;height:72px}
+.ss-slot > *{grid-area:1/1}
+.ss-cambtn,.ss-backbtn{
+  width:72px;height:72px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  background:#fff;color:#000;border:2px solid #000;box-shadow:0 0 0 2px #fff;font-size:13px;font-weight:800;line-height:1.1;
+  touch-action:manipulation;transform:scale(1);transition:transform .1s;
+}
+.ss-cambtn:active,.ss-backbtn:active{transform:scale(.93)}
+.ss-cambtn .ic,.ss-backbtn .ic{flex:none}
+/* 바꿀 땐 visibility 만(즉시) — opacity 를 바꾸면 쌓임 맥락이 생겼다 없어져 셔터 줄 레이아웃이 다시 돈다(CDP 로 확인) */
+.ss-slot[data-mode="drawing"] > :first-child,
+.ss-slot[data-mode="closing"] > :first-child{visibility:hidden;pointer-events:none}
+.ss-slot[data-mode="opening"] > .ss-cambtn,
+.ss-slot[data-mode="camera"] > .ss-cambtn{visibility:hidden;pointer-events:none}
+/* 카메라 실패(문 위에 이유 + [다시 열기]) 동안: 셔터 자리 = [도면](실패 상자와 겹치지 않게 엄지 자리로) */
+.ss-slot > .ss-backbtn{visibility:hidden;pointer-events:none}
+.ss-slot[data-fail][data-mode="camera"] > .ss-backbtn{visibility:visible;pointer-events:auto}
+.ss-slot[data-fail][data-mode="camera"] > :first-child{visibility:hidden;pointer-events:none}
+
+/* 움직임 없이 바로 */
+.sstage.ss-instant,.sstage.ss-instant *{transition:none !important}
+@media (prefers-reduced-motion:reduce){
+  .sstage,.sstage *,.ss-slot,.ss-slot *{transition:none !important}
+}
+/* 시험 페이지(느린 화면 찍기) — sharedStage({ timeScale: 10 }) 와 같이 */
+.ss-slowmo{--ss-in:1200ms;--ss-out:1400ms;--ss-out-delay:1200ms}
+.ss-slowmo .camdoor{--cd-open:2800ms;--cd-close:2000ms;--cd-half:1800ms}

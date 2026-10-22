@@ -5,12 +5,15 @@ import { h, toast } from '../dom.js';
 import * as D from '../../data/docs.js';
 import { docFrame } from '../widgets/docframe.js';
 import { keepAwake } from '../../platform/awake.js';
-import { dxIcon, docMenu } from './docs.js';
+import { dxIcon, docMenu, prepDrawings } from './docs.js';
 
 export default {
   keepOnResume: true,
   mount(root, params, nav) {
     const id = params?.id;
+    const fromCap = params?.from === 'capture';               // 촬영 화면에서 [전체 화면]으로 왔으면 주 버튼은 「촬영으로 돌아가기」(스택에 촬영을 또 쌓지 않게)
+    const capLabel = d => fromCap ? '촬영으로 돌아가기' : d && (d.kind === 'drawing' || d.kind === 'pdf') ? '이 도면 띄우고 촬영' : d ? '이 자료 띄우고 촬영' : '이 도면 띄우고 촬영';
+    prepDrawings();                                          // [⋮] 의 [도면보관함으로 옮기기]를 판단하려고(모듈만)
     const title = h('h1', { class: 'dv-title', text: '자료 보기' });
     const pin = h('button', { type: 'button', class: 'icbtn dv-pin', 'data-testid': 'docview-pin', 'aria-label': '맨 위에 고정', 'aria-pressed': 'false' }, dxIcon('pin'));
     const more = h('button', { type: 'button', class: 'icbtn', 'data-testid': 'docview-more', 'aria-label': '더 보기', onclick: () => docMenu(id, nav, { inViewer: true }) }, dxIcon('more'));
@@ -18,8 +21,8 @@ export default {
       h('button', { type: 'button', class: 'icbtn', 'aria-label': '뒤로', onclick: () => nav.back() }, dxIcon('back')),
       title, pin, more);
     const frame = docFrame({});
-    const cap = h('button', { type: 'button', class: 'primary dv-capture', 'data-testid': 'docview-capture', onclick: () => nav.go('capture', { docId: id }) },
-      dxIcon('camera'), h('span', { text: '이 도면 띄우고 촬영' }));
+    const cap = h('button', { type: 'button', class: 'primary dv-capture', 'data-testid': 'docview-capture', onclick: () => fromCap ? nav.back() : nav.go('capture', { docId: id }) },
+      dxIcon('camera'), h('span', { text: capLabel(null) }));
     const stage = h('div', { class: 'dv-stage' }, frame.el, cap);
     const page = h('div', { class: 'dv-page' }, bar, stage);
     root.append(page);
@@ -39,7 +42,7 @@ export default {
       pin.setAttribute('aria-pressed', d.pinned ? 'true' : 'false');
       pin.setAttribute('aria-label', d.pinned ? '고정 풀기' : '맨 위에 고정');
       cap.textContent = '';
-      cap.append(dxIcon('camera'), h('span', { text: d.kind === 'drawing' || d.kind === 'pdf' ? '이 도면 띄우고 촬영' : '이 자료 띄우고 촬영' }));
+      cap.append(dxIcon('camera'), h('span', { text: capLabel(d) }));
     };
 
     let dead = false, off = () => {};

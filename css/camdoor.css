@@ -1,8 +1,8 @@
 /* 카메라 문(widgets/camdoor.js) — 뷰파인더(.cap-vf) 위에 겹치는 덮개. 상태는 data-state(closed|opening|open|closing), 실패는 data-fail, 늦음은 data-slow.
-   움직임은 transform·opacity·visibility 만(GPU 합성, 레이아웃 없음). 열기 약 280ms ease-out, 반쯤 열기 180ms(살짝 덜컥), 닫기 200ms.
+   움직임은 transform·opacity·visibility 만(GPU 합성, 레이아웃 없음). 열기 약 200ms ease-out, 반쯤 열기 150ms(살짝 덜컥), 닫기 200ms(CLAUDE.md 움직임 150~200ms).
    크기 기준(CLAUDE.md): 주 버튼 52px·노랑·검정 2px(이 화면의 주 행동), 보조 48px, 글자 15~17px(최소 13px). */
 .camdoor{
-  --cd-open:280ms; --cd-close:200ms; --cd-half:180ms; --cd-stripe:16px;
+  --cd-open:200ms; --cd-close:200ms; --cd-half:150ms; --cd-stripe:16px;
   position:absolute;inset:0;z-index:5;overflow:hidden;
   container-type:size;contain:layout paint style;
   visibility:visible;pointer-events:auto;transition:visibility 0s 0s;

@@ -13,3 +13,20 @@
 .day-empty{font-size:15px;color:var(--ink2);padding:16px;background:var(--paper);border-radius:12px;margin:0}
 .day-empty[hidden]{display:none}
 .day-add{display:flex;align-items:center;justify-content:center;gap:8px}
+
+/* 오늘 위치도(day-locmap) — 도면·쪽마다 한 줄: 미리보기(104×78, 핀 자리 점) + 도면 이름 + 핀 수 → 도면 보기 */
+.day-loc{margin:0 0 16px}
+.day-loc[hidden]{display:none}
+.day-loc-h{font-size:15px;font-weight:800;color:var(--ink2);margin:0 0 8px}
+.day-loc-list{background:var(--paper);border-radius:var(--r,12px);overflow:hidden}
+.day-loc-row{display:flex;align-items:center;gap:12px;width:100%;min-height:94px;padding:8px 8px 8px 8px;border:0;border-top:1px solid var(--soft);background:none;text-align:left;color:var(--ink)}
+.day-loc-row:first-child{border-top:0}
+.day-loc-row:active{background:#F1F2EF}
+.day-loc-row>.ic{color:var(--ink2)}
+.day-loc-th{display:grid;place-items:center;flex:none;width:104px;height:78px;border-radius:6px;background:#F4F5F2;color:var(--ink2);overflow:hidden}
+.day-loc-fit{position:relative;display:block}
+.day-loc-img{display:block;max-width:none}
+.day-loc-dot{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;background:var(--hivis);border:2px solid #000;box-sizing:border-box}
+.day-loc-t{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.day-loc-t b{font-size:16px;font-weight:800;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.day-loc-t small{font-size:14px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

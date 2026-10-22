@@ -1,0 +1,80 @@
+/* 폴더(widgets/folderbar.js) — 자료함·도면보관함 공통. 토큰·.primary·.secondary·.textbtn·.icbtn·.sheet 는 app.css.
+   크기 표(CLAUDE.md): 빵 부스러기 칸 44px · 폴더 줄 56px(글 16/14) · 아이콘 버튼 48px · 선택 막대 버튼 52px.
+   검정 2px 는 고른 것(체크 동그라미)과 주 버튼에만. 고른 것은 체크 + aria-pressed(색만으로 나타내지 않는다). 움직임 없음(바로 바뀌게). */
+
+/* ---------- 빵 부스러기 ---------- */
+.fb-bar{display:flex;align-items:center;min-height:44px;margin:-4px -16px 4px;padding:0 8px;overflow-x:auto;overscroll-behavior-x:contain;
+  scrollbar-width:none;white-space:nowrap;-webkit-user-select:none;user-select:none}
+.fb-bar::-webkit-scrollbar{display:none}
+.fb-crumb{flex:none;display:inline-flex;align-items:center;min-height:44px;max-width:min(44vw,180px);padding:0 8px;border-radius:8px;
+  font-size:15px;font-weight:700;color:var(--ink2)}
+.fb-crumb > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button.fb-crumb{text-decoration:underline;text-decoration-color:var(--soft);text-underline-offset:4px}
+button.fb-crumb:active{background:rgba(0,0,0,.08)}
+.fb-crumb.cur{color:var(--ink);font-weight:800;max-width:min(56vw,240px)}
+.fb-dots{min-width:44px;justify-content:center;text-decoration:none}
+.fb-sep{flex:none;display:grid;place-items:center;width:12px;color:var(--ink2)}
+
+/* ---------- 폴더 줄 ---------- */
+.fb-rows{background:var(--paper);border-radius:var(--r);overflow:hidden;margin-bottom:8px}
+.fb-row{display:flex;align-items:center;border-top:1px solid var(--soft)}
+.fb-rows > .fb-row:first-child{border-top:0}
+.fb-open{flex:1;min-width:0;display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 4px 8px 16px;text-align:left;color:var(--ink);
+  -webkit-touch-callout:none}
+.fb-open:active{background:#F1F2EF}
+.fb-ico{width:40px;height:40px;flex:none;display:grid;place-items:center;border-radius:10px;background:var(--concrete);color:var(--ink)}
+.fb-ico .ic{fill:#fff}
+.fb-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.fb-name{font-size:16px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fb-sub{display:flex;align-items:center;gap:6px;min-width:0;font-size:14px;line-height:1.3;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fb-menu{color:var(--ink2);margin-right:4px}
+
+/* 찾기 결과 줄의 폴더 경로(whereTag) — 작게, 넘치면 말줄임 */
+.fb-where{display:inline-flex;align-items:center;gap:3px;min-width:0;max-width:100%;font-size:13px;font-weight:700;color:var(--ink2)}
+.fb-where > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- 여러 개 선택 ---------- */
+/* 화면이 bind 한 칸 앞에 끼우는 체크 동그라미 — 선택 모드에서만 보인다 */
+.fb-check{display:none;width:28px;height:28px;flex:none;place-items:center;border-radius:50%;border:2px solid var(--line);background:var(--paper);color:#fff}
+.fb-check .ic{visibility:hidden;stroke-width:3}
+.fb-picking{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.fb-picking > .fb-check{display:grid}
+.fb-picked > .fb-check{background:#000;border-color:#000}
+.fb-picked > .fb-check .ic{visibility:visible}
+.fb-picked,.dx-row:has(> .fb-picked),.dw-row:has(> .fb-picked){background:#F1F2EF}
+/* 선택 모드에서는 줄 끝 메뉴(⋮)를 숨긴다 — 탭이 고르기로만 가게(자료함 .dx-menu · 도면보관함 .dw-menu) */
+.fb-picking ~ .dx-menu,.fb-picking ~ .dw-menu,.fb-picking ~ .fb-menu{visibility:hidden}
+
+/* 아래 고정 막대(엄지 영역). 화면 맨 끝에 붙인다 — .dock 처럼 sticky */
+.fb-selbar{position:sticky;bottom:0;z-index:6;margin:auto -16px 0;padding:4px 16px calc(12px + var(--safe-b));display:grid;gap:4px;
+  background:var(--paper);border-top:1px solid var(--soft);box-shadow:0 -6px 18px rgba(0,0,0,.08)}
+.fb-selhead{display:flex;align-items:center;gap:4px;min-height:44px}
+.fb-selcount{flex:1;min-width:0;font-size:17px;font-weight:800}
+.fb-selhead .textbtn{text-decoration:none;color:var(--ink);font-weight:800}
+.fb-selbtns{display:flex;gap:8px}
+.fb-selbtns > .secondary{flex:0 0 34%;min-height:52px}
+.fb-selbtns > .primary{flex:1 1 auto;min-height:52px;font-size:16px}
+.fb-selbar[data-busy] .fb-selbtns > *{opacity:.5;pointer-events:none}
+
+/* ---------- 폴더 고르기 시트 ---------- */
+/* 높이 고정(폴더를 오가도 시트가 출렁이지 않게), 목록만 스크롤 */
+.sheet.fb-sheet{height:min(75dvh,calc(100% - 16px));max-height:none;padding-bottom:calc(12px + var(--safe-b))}
+.fb-pbody{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:4px}
+.fb-phead{flex:none;display:flex;align-items:center;gap:4px;margin-top:-4px}
+.fb-ptitle{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fb-px{width:44px;height:44px;margin-right:-8px;color:var(--ink2)}
+.fb-pbar{flex:none;margin:0 -16px;padding:0 8px;border-bottom:1px solid #E6E8E4}
+.fb-plist{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;margin:0 -16px;padding:0 16px;contain:content}
+.fb-prow{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:8px 0 8px 4px;border-top:1px solid #E6E8E4;text-align:left;color:var(--ink)}
+.fb-plist > .fb-prow:first-child{border-top:0}
+.fb-prow:active{background:#F1F2EF}
+.fb-prow .chev{flex:none;color:var(--ink2)}
+.fb-here{flex:none;display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:5px;background:var(--ink);color:#fff;font-size:13px;font-weight:800}
+.fb-pnone{flex:1 1 auto;padding:24px 8px;text-align:center;font-size:15px;color:var(--ink2)}
+.fb-newrow{flex:none;display:flex;gap:8px;padding:4px 0}
+.fb-newrow .sheet-field{flex:1;min-width:0}
+.fb-newrow .fb-newok{flex:none;width:auto;min-width:88px}
+.fb-pacts{flex:none;display:flex;gap:8px;padding-top:8px;border-top:1px solid #E6E8E4}
+.fb-pacts > .secondary{flex:0 0 38%}
+.fb-pacts > .primary{flex:1 1 auto}
+.fb-pacts > .primary:disabled{background:var(--paper);border:1px solid var(--line);color:var(--ink2);opacity:1;font-size:16px}

@@ -283,7 +283,7 @@ export function lastNumberRange(s) {
   return m ? [m.index, m.index + m[0].length] : null;
 }
 
-export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', hint = null, draftKey = null, select = null } = {}) {
+export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', cancelLabel = '취소', hint = null, draftKey = null, select = null } = {}) {
   return new Promise(resolve => {
     let result = null, draftT = 0, flushDraft = null;
     const key = multiline ? (draftKey || title || 'text') : null;
@@ -315,7 +315,7 @@ export function textSheet({ title, value = '', placeholder = '', multiline = fal
         clear ? h('div', { class: 'sheet-fieldwrap' }, field, clear) : field,
         hint ? (hint instanceof Node ? hint : h('p', { class: 'note', text: hint })) : null,
         h('div', { class: 'sheet-actions' },
-          h('button', { type: 'button', class: 'secondary', 'data-testid': 'sheet-cancel', text: '취소', onclick: () => { result = null; closeTopSheet(); } }),
+          h('button', { type: 'button', class: 'secondary', 'data-testid': 'sheet-cancel', text: cancelLabel || '취소', onclick: () => { result = null; closeTopSheet(); } }),
           h('button', { type: 'button', class: 'primary', 'data-testid': 'sheet-ok', text: okLabel, onclick: ok })));
       // 상자에 붙은 직후 포커스(같은 탭 작업 안 — 키보드가 뜬다)
       focusEnd(field, select === 'lastNumber' ? lastNumberRange(field.value) : null);

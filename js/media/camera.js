@@ -24,7 +24,11 @@
 //  - takePhoto 결과는 다시 인코딩하지 않고 {blob 그대로, turns, aspect} 를 넘겨 회전·자르기는 pipeline 이 작업본을 만들 때 한다(설계 비평 7).
 //  - pause(true): 글 입력 시트가 떠 있는 동안 미리보기(트랙 끔 + video 멈춤 — 마지막 그림이 남는다)와 방향 감지를 쉰다(키보드와 GPU·메인 스레드를 다투지 않게).
 //  - 찍힌 사진의 크기는 JPEG 머리로 읽는다(통째로 디코드하지 않는다).
-import { transformCanvas, canvasToBlob, cropRect, dims, jpegInfoOf, snapshot, frameJpegs, frameWorkerReady } from './image.js';
+//
+// 잠깐 붙잡기(속도 감사 #5 ④): 촬영 화면에서 크게 보기·지도로 잠깐 갔다 올 때 release({ keepMs }) — 트랙을 끄고(enabled=false, 프레임 안 받음)
+//   video 에서 떼지만 기기는 놓지 않는다. keepMs(기본 30초) 안에 open(새 video) 하면 같은 stream 을 그 video 에 붙여 곧바로(getUserMedia 다시 열기 0).
+//   그 사이 백그라운드로 가거나(pause)·트랙이 끝나면 바로 닫는다(배터리·다른 앱 카메라). warm(): [기록 시작]을 누르는 순간 — 사진 워커를 미리 띄우고 붙잡은 카메라 시간을 늘린다.
+import { transformCanvas, canvasToBlob, cropRect, dims, jpegInfoOf, snapshot, frameJpegs, frameWorkerReady, makeWorkAndThumbFast } from './image.js';
 import * as native from '../platform/native.js';
 
 // ---------- 순수 계산 ----------
@@ -105,6 +109,8 @@ let ic = null, photoOpts = null, photoOptsP = null, photoOptsBroken = false;   /
 let lastCaps = { zoom: null, torch: false };
 const stateFns = new Set();
 let offPause = null, offResume = null;
+let lingering = false, lingerT = 0;                       // release 뒤 붙잡아 두는 중(video 없음, 트랙 끔)
+export const LINGER_MS = 30000;
 function emit(state, err) { for (const fn of stateFns) { try { fn(state, err); } catch (e) { console.error(e); } } }
 // 상태: 'open' | 'paused'(백그라운드) | 'closed' | 'error'(err.code) — capture 화면이 cam-fallback 을 띄우는 데 쓴다
 export function onState(fn) { stateFns.add(fn); return () => stateFns.delete(fn); }
@@ -195,6 +201,7 @@ function stopTracks() {
 }
 // 트랙이 끝났으면(다른 앱이 가져감·백그라운드에서 끊김) 한 번 다시 열어 보고, 안 되면 error
 async function onEnded() {
+  if (lingering) { close(); return; }                                     // 붙잡아 둔 사이 끊김 — 다시 열지 않는다
   if (!wanted || document.hidden) return;
   stopTracks();
   if (reopenTried) { emit('error', fail('busy')); return; }
@@ -202,7 +209,10 @@ async function onEnded() {
   try { await start(); } catch (e) { emit('error', e.code ? e : fail('unknown', e)); }
 }
 // 백그라운드로 가면 닫고(초록 점·배터리·안드로이드가 끊음) 돌아오면 다시 연다(설계 비평 8)
-function onHide() { if (wanted && stream) { stopTracks(); emit('paused'); } }
+function onHide() {
+  if (lingering) { close(); return; }                                     // 붙잡아 둔 카메라는 백그라운드에서 바로 놓는다
+  if (wanted && stream) { stopTracks(); emit('paused'); }
+}
 async function onShow() {
   if (!wanted || stream || opening) return;
   reopenTried = false;
@@ -221,6 +231,8 @@ function lifecycle(on) {
 }
 
 export async function open(videoEl) {
+  if (lingering && stream && wanted) return attach(videoEl);                // 붙잡아 둔 stream 을 새 video 에 — 곧바로
+  endLinger();
   if (wanted && video === videoEl && stream) return lastCaps;
   if (stream) stopTracks();
   if (!wanted) lifecycle(true);
@@ -250,7 +262,58 @@ function applyRest() {
   if (resting) listen(false); else if (wanted) listen(true);
 }
 
+function endLinger() { clearTimeout(lingerT); lingerT = 0; lingering = false; }
+// 붙잡아 둔 stream 을 videoEl 에 다시 붙인다(트랙 다시 켬) → caps
+async function attach(videoEl) {
+  endLinger();
+  video = videoEl || null; reopenTried = false;
+  listen(true);
+  const t = stream.getVideoTracks()[0];
+  if (t) t.enabled = !resting;
+  if (video) {
+    video.muted = true; video.playsInline = true; video.autoplay = true;
+    video.setAttribute('playsinline', ''); video.setAttribute('muted', '');
+    if (video.srcObject !== stream) video.srcObject = stream;
+    try { await video.play(); } catch { /* 자동 재생 막힘 */ }
+    if (!video.videoWidth && stream) await new Promise(r => { const tm = setTimeout(r, 3000); video.addEventListener('loadedmetadata', () => { clearTimeout(tm); r(); }, { once: true }); });
+  }
+  if (!stream || !wanted) throw fail('unknown');                          // 붙이는 사이 닫힘(백그라운드)
+  emit('open');
+  return lastCaps;
+}
+// 화면을 잠깐 떠날 때(크게 보기·지도) — 닫지 않고 keepMs 동안 붙잡는다. 그 안에 open(새 video) 하면 이어 쓴다. 0 이하·열린 게 없으면 close()
+export function release({ keepMs = LINGER_MS } = {}) {
+  if (!stream || !wanted || !(keepMs > 0) || document.hidden) { close(); return false; }
+  clearTimeout(lingerT);
+  resting = false;                                                         // 쉬기는 화면 몫 — 붙잡는 동안엔 트랙을 꺼 둔다
+  const t = stream.getVideoTracks()[0];
+  if (t) t.enabled = false;
+  if (video) { try { video.pause(); } catch { /* 없음 */ } try { video.srcObject = null; } catch { /* 없음 */ } }
+  video = null;
+  listen(false);
+  orientFns.clear();
+  lingering = true;
+  lingerT = setTimeout(() => { lingerT = 0; if (lingering) close(); }, keepMs);
+  return true;
+}
+export const isLingering = () => lingering;
+// [기록 시작]을 누르는 순간(홈 pointerdown) — 카메라는 켜지 않는다(사용자 지시: [카메라 열기]를 눌러야 켠다).
+// 사진 워커를 미리 띄우고(첫 장 워커 생성 비용을 셔터에서 빼기), 붙잡아 둔 카메라가 있으면 시간을 다시 센다
+let warmedAt = 0;
+export function warm() {
+  if (lingering && lingerT) { clearTimeout(lingerT); lingerT = setTimeout(() => { lingerT = 0; if (lingering) close(); }, LINGER_MS); }
+  const now = Date.now();
+  if (now - warmedAt < 20000 || !frameWorkerReady() || typeof OffscreenCanvas !== 'function') return;
+  warmedAt = now;
+  try {
+    const c = new OffscreenCanvas(16, 12);
+    const g = c.getContext('2d'); g.fillStyle = '#888'; g.fillRect(0, 0, 16, 12);
+    c.convertToBlob({ type: 'image/jpeg', quality: 0.5 }).then(b => makeWorkAndThumbFast(b)).catch(() => {});
+  } catch { /* 워커 미리 띄우기 실패 — 첫 셔터 때 띄운다 */ }
+}
+
 export function close() {
+  endLinger();
   wanted = false;
   resting = false;
   stopTracks();

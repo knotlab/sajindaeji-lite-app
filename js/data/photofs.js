@@ -23,7 +23,13 @@ const CHUNK = 512 * 1024 - ((512 * 1024) % 3);
 let kindP = null;                                                            // 'file' | 'opfs' | 'idb' 를 정한 약속
 let current = null;
 let localP = null;                                                           // APK 의 incoming·original 저장소 'opfs' | 'idb'
+let baseP = Promise.resolve(false);                                          // APK: 파일 주소 뿌리(initFileBase)를 받았는지 — fileSrcSync 전에 기다린다
 const dirHandles = new Map();
+// APK 의 DATA/<incoming|originals> 는 v0.1.1 까지만 썼다 — 한 번 비었음을 보면 다시 readdir 하지 않는다(부팅 브리지, 속도 감사 #16)
+const K_NOLEGACY = 'sajindaeji-lite.fs.nolegacy.v1';
+const noLegacy = kind => { try { return !!JSON.parse(globalThis.localStorage?.getItem(K_NOLEGACY) || '{}')[kind]; } catch { return false; } };
+const setNoLegacy = kind => { try { const o = JSON.parse(globalThis.localStorage?.getItem(K_NOLEGACY) || '{}'); o[kind] = 1; globalThis.localStorage?.setItem(K_NOLEGACY, JSON.stringify(o)); } catch { /* 저장 못 함 — 다음에 다시 본다 */ } };
+const LEGACY_ONLY = new Set(['incoming', 'original']);                       // 지금 판은 DATA 에 쓰지 않는 종류(work·thumb 는 예전 사진이 DATA 에 있다)
 
 const fileName = (kind, id) => (kind === 'doc' ? String(id) : `${id}.jpg`);
 const idOf = (kind, name) => (kind === 'doc' ? name : name.replace(/\.jpg$/i, ''));
@@ -61,7 +67,7 @@ export async function initPhotoFs({ force } = {}) {
   if (!kindP) {
     kindP = (async () => {
       if (N.isNative?.()) {
-        N.initFileBase?.().catch(e => console.warn('파일 주소 뿌리를 못 받았어요', e));   // 썸네일 주소를 브리지 왕복 없이(fileSrcSync)
+        baseP = Promise.resolve(N.initFileBase?.()).then(() => true, e => { console.warn('파일 주소 뿌리를 못 받았어요', e); return false; });   // 썸네일 주소를 브리지 왕복 없이(fileSrcSync)
         return 'file';
       }
       return (await opfsWorks()) ? 'opfs' : 'idb';
@@ -106,10 +112,15 @@ async function filePut(kind, id, data) {
     throw quota(e);
   }
 }
+// 파일 주소(convertFileSrc) — 뿌리를 받아 두었으면 브리지 0, 아니면 getUri 한 번
+async function fileUrl(kind, id) {
+  await baseP;
+  try { return N.fileSrcSync(DATA, nPath(kind, id)); } catch { return N.fileSrc(DATA, nPath(kind, id)); }
+}
+// stat·getUri 없이 주소로 바로 읽는다 — 없으면 404(없음으로). 속도 감사 #4·#14
 async function fileGet(kind, id) {
   try {
-    if (!(await N.fsStat(DATA, nPath(kind, id)))) return null;
-    const r = await fetch(await N.fileSrc(DATA, nPath(kind, id)));
+    const r = await fetch(await fileUrl(kind, id));
     if (!r.ok) return null;
     const b = await r.blob();
     return b.type ? b : new Blob([b], { type: mimeOf(kind) });
@@ -206,13 +217,12 @@ export async function has(kind, id, store) {
   return null;
 }
 
-// 화면용 주소. APK 는 convertFileSrc(빠름 — 뿌리 주소를 받아 두었으면 getUri 왕복도 없이), 웹은 새 objectURL(캐시·해제는 store.js 가 한다)
+// 화면용 주소. APK 파일(store 'file' — 예전 사진·자료)은 convertFileSrc 주소를 stat 없이 바로(없는 파일은 <img> onerror 가 「!」로 — 속도 감사 #4),
+// 웹·OPFS·IDB 는 새 objectURL(캐시·해제는 store.js 가 한다)
 export async function url(kind, id, store) {
   checkKind(kind);
   const k = store || (LOCAL.has(kind) && (await backend()) === 'file' ? null : await backend());
-  if (k === 'file' && (await N.fsStat(DATA, nPath(kind, id)).catch(() => null))) {
-    try { return N.fileSrcSync(DATA, nPath(kind, id)); } catch { return N.fileSrc(DATA, nPath(kind, id)); }
-  }
+  if (k === 'file') return fileUrl(kind, id);
   const b = await get(kind, id, store);
   return b ? URL.createObjectURL(b) : null;
 }
@@ -231,7 +241,11 @@ export async function remove(kind, id, store) {
 
 async function entries(kind, sizes = true) {
   const k = await backend(), out = new Map();                                // id → size
-  if (k === 'file') for (const f of await N.fsList(DATA, DIRS[kind]).catch(() => [])) out.set(idOf(kind, f.name), Number(f.size) || 0);
+  if (k === 'file' && !(LEGACY_ONLY.has(kind) && noLegacy(kind))) {
+    const files = await N.fsList(DATA, DIRS[kind]).catch(() => []);
+    for (const f of files) out.set(idOf(kind, f.name), Number(f.size) || 0);
+    if (!files.length && LEGACY_ONLY.has(kind)) setNoLegacy(kind);
+  }
   if ((k !== 'file' || LOCAL.has(kind)) && globalThis.navigator?.storage?.getDirectory) {   // IDB 모드여도 예전에 OPFS 에 넣은 것까지(APK 는 incoming·original)
     try {
       for await (const [name, h] of (await opfsDir(kind)).entries()) {

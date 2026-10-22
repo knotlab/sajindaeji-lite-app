@@ -1,6 +1,8 @@
 // 자료함 `docs`(SPEC §10.6) — 도면·문서를 올려 두고 현장에서 바로 연다. 컨셉 s-docs 느낌 + CLAUDE.md 사용성 크기 표.
 // 바(뒤로·자료함·[올리기]·[⋮]) → 검색 → 지금 위치 근처(노란 상자, 200m·최대 3) → 칩 → 고정 → 전체 → 지운 자료.
 // 줄을 누르면 docview, 줄 끝 [⋮] 은 이름·태그·고정·위치 연결·촬영할 때 띄우기·공유·삭제.
+// 도면 파일(PDF·DWG·DXF·그림 — drawings.drawingKind)이면 [⋮] 에 [도면보관함으로 옮기기](docs/도면보관함-설계.md §2): 옮기고 자료함에서는 지운다, 5초 [되돌리기].
+// DWG·DXF 를 자료함에 올리면 처음 한 번만 "도면은 도면보관함에 넣으면 핀·길찾기가 돼요 [옮기기]".
 // docview.js 가 같은 동작을 쓰도록 메뉴·공유·아이콘 도우미를 이름 붙여 내보낸다(라우터는 default 만 쓴다).
 import { h, toast, snackbar, openSheet, textSheet, confirmModal, choose, pickFiles, lockButton } from '../dom.js';
 import * as D from '../../data/docs.js';
@@ -81,6 +83,58 @@ export async function shareDoc(d) {
   toast('내려받았어요');
 }
 
+// ---- 도면보관함으로 옮기기(도면 파일만) ----
+// 도면보관함 모듈이 없거나 실패하면 null(메뉴에 안 보이고, 눌러도 조용히 실패 토스트)
+let dwgP = null;
+let dwgSync = null;                                         // 메뉴를 열 때 동기로 판단하려고(자료함 화면이 열릴 때 미리 불러 둔다 — 모듈만, DB 는 열지 않는다)
+const dwgMod = () => (dwgP ||= import('../../data/drawings.js').then(m => (dwgSync = m)).catch(err => { console.warn('도면보관함 모듈 없음', err); dwgP = null; return null; }));
+export const prepDrawings = () => dwgMod();
+export const canMoveToDrawings = d => !!d && !!dwgSync?.drawingKind?.(d.name);
+
+// 옮기기 = 원본을 도면보관함에 새로 넣고(addDrawingFiles) → 자료함에서는 지우기(휴지통). 되돌리기 = 도면보관함 쪽 영구 삭제 + 자료 되살리기
+const MOVE_UNDO_MS = 5000;
+export async function moveToDrawings(ids) {
+  const M = await dwgMod();
+  if (!M) { toast('도면보관함을 열지 못했어요'); return 0; }
+  const list = (Array.isArray(ids) ? ids : [ids]).map(id => D.doc(id)).filter(d => d && !d.deletedAt && M.drawingKind?.(d.name));
+  if (!list.length) return 0;
+  let site = '';
+  try { site = store.settings()?.siteName || ''; } catch { /* 설정 없음 */ }
+  if (list.length > 1) toast(`옮기는 중… ${list.length}개`, 60000);
+  const moved = [];
+  for (const d of list) {
+    try {
+      const blob = await D.docBlob(d.id);
+      if (!blob) throw Object.assign(new Error('파일 없음'), { code: 'NO_FILE' });
+      const { added, failed } = await M.addDrawingFiles([new File([blob], d.name, { type: d.mime || blob.type || '' })], { site: d.site || site, fromDocId: d.id });
+      if (!added?.length) throw Object.assign(new Error(failed?.[0]?.reason || '옮기지 못했어요'), { code: failed?.[0]?.code || 'ERROR' });
+      await D.deleteDoc(d.id);
+      moved.push({ docId: d.id, drawingId: added[0].id });
+    } catch (err) {
+      console.error('도면보관함으로 옮기지 못했다', d.name, err);
+      toast(err?.code === 'QUOTA' ? '저장 공간이 부족해요' : (err?.code === 'NO_FILE' ? '파일이 없어요. 다시 올려 주세요' : `못 옮겼어요: ${err?.message || d.name}`), 4000);
+    }
+  }
+  if (!moved.length) return 0;
+  // 그림(타일) 만들기 줄에 미리 세운다 — 열 때 기다리지 않게(drawtiles 가 한가할 때 돈다). 모듈이 없으면 열 때 만든다
+  import('../../media/drawtiles.js').then(DT => { for (const m of moved) DT.queueDrawing?.(m.drawingId, { page: 1 })?.catch?.(() => {}); })
+    .catch(err => console.warn('도면 그림 줄을 못 세웠다', err));
+  // 되돌리기 기회가 지나면 자료함 쪽은 영구 삭제(「지운 자료」에 남아 되살리면 같은 도면이 둘이 되지 않게)
+  let undone = false;
+  setTimeout(() => { if (!undone) for (const m of moved) D.purgeDoc(m.docId).catch(err => console.warn('옮긴 자료를 치우지 못했다', err)); }, MOVE_UNDO_MS + 500);
+  snackbar(moved.length === 1 ? '도면보관함으로 옮겼어요' : `도면 ${moved.length}개를 도면보관함으로 옮겼어요`, {
+    actionLabel: '되돌리기', ms: MOVE_UNDO_MS,
+    onAction: async () => {
+      undone = true;
+      for (const m of moved) {
+        await D.restoreDoc(m.docId);
+        await (M.purgeDrawing || M.deleteDrawing)(m.drawingId).catch(err => console.warn('옮긴 도면을 치우지 못했다', err));
+      }
+    },
+  });
+  return moved.length;
+}
+
 // ---- 지우기(5초 되돌리기) ----
 export async function removeDoc(d) {
   await D.deleteDoc(d.id);
@@ -99,6 +153,7 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
     d.anchor ? { value: 'unanchor', label: '위치 연결 풀기', sub: '지금은 이 자료에 위치가 연결돼 있어요' }
       : { value: 'anchor', label: '현재 위치 연결', sub: '여기 오면 "지금 위치 근처"에 떠요' },
     nav && !inViewer ? { value: 'capture', label: '촬영할 때 띄우기' } : null,
+    canMoveToDrawings(d) ? { value: 'todrawings', label: '도면보관함으로 옮기기', sub: '도면에 핀을 찍고 길을 찾을 수 있어요' } : null,
     { value: 'share', label: '공유(원본 파일)' },
     { value: 'delete', label: '지우기' },
   ].filter(Boolean);
@@ -123,6 +178,8 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
       await D.updateDoc(id, { anchor: null }); toast('위치 연결을 풀었어요');
     } else if (pick === 'capture') {
       nav.go('capture', { docId: id });
+    } else if (pick === 'todrawings') {
+      if (await moveToDrawings(id) && inViewer) nav?.back();
     } else if (pick === 'share') {
       await shareDoc(D.doc(id));
     } else if (pick === 'delete') {
@@ -148,7 +205,14 @@ async function upload() {
   if (failed.length && !added.length) toast(failed.length === 1 ? `못 올렸어요: ${failed[0].reason}` : `${failed.length}개를 못 올렸어요`, 4000);
   else if (failed.length) toast(`${added.length}개 올렸어요 · ${failed.length}개는 못 올렸어요(${failed[0].reason})`, 4000);
   else toast(added.length === 1 ? '자료를 올렸어요' : `자료 ${added.length}개를 올렸어요`);
+  // CAD 도면(DWG·DXF·DWT)은 도면보관함이 제자리 — 처음 한 번만 알려 준다(PDF 는 문서일 수도 있어 묻지 않는다)
+  const cad = added.filter(d => /\.(dwg|dxf|dwt)$/i.test(d.name || ''));
+  if (cad.length && !lsGet(CAD_HINT) && await dwgMod()) {
+    lsSet(CAD_HINT, '1');
+    snackbar('도면은 도면보관함에 넣으면 핀·길찾기가 돼요', { actionLabel: '옮기기', ms: 6000, onAction: () => moveToDrawings(cad.map(d => d.id)) });
+  }
 }
+const CAD_HINT = 'lite.docsCadHint';
 
 // ---- 오프라인 준비: 문서 엔진 미리 받기(SPEC §10.3) ----
 // viewer/engines.json 의 주소를 차례로 fetch → PWA 는 sw.js 'av-engines-v1', APK 는 EngineCacheWebViewClient 가 기기에 저장한다
@@ -253,6 +317,7 @@ function docRow(d, nav, { extra, testid = 'doc-row' } = {}) {
 
 export default {
   mount(root, params, nav) {
+    dwgMod();
     const page = h('div', { class: 'dx-page' });
     let chip = CHIPS.some(([v]) => v === lsGet(CHIP_KEY)) ? lsGet(CHIP_KEY) : 'all';
     let q = '';

@@ -192,7 +192,8 @@ input::placeholder,textarea::placeholder{color:#6E7378}
 .gpsline.compact{min-height:32px;padding:4px 8px;gap:6px;border-radius:var(--r-sm)}
 .gpsline.compact .gps-main{font-size:14px}
 .gpsline.compact .gps-text{display:flex;gap:6px;align-items:baseline}
-.gpsline.compact .gps-sub{font-size:13px}
+.gpsline.compact .gps-main{flex:1 1 auto;min-width:0}
+.gpsline.compact .gps-sub{font-size:13px;flex:0 0 auto;max-width:50%}   /* ±m 은 주소보다 먼저 잘리지 않게(좁은 폭 촬영 화면) */
 
 /* ---------- 시트·대화상자(#layer, 한 번에 하나) ---------- */
 /* #layer 자체는 상자가 없다(비었을 때 화면 탭을 가로채지 않게). 키보드가 오면 --kb 만큼 위로(visualViewport) */

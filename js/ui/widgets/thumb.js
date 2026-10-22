@@ -6,6 +6,8 @@
 //  - 사진·묶음(위치·내용)·설정이 바뀌면 바뀐 썸네일만: 처리 끝 → 그림, 글 바뀜 → 띠만(그림은 그대로). 모듈 하나가 store.on 을 한 번만 구독.
 //  - 처리 중: pipeline.preview(id) 가 있으면 그 미리보기(+띠), 없으면 회색 「처리 중」. 실패는 회색 「!」.
 // 칸 모양(4:3 가로, object-fit)은 css .thumb 그대로 — 띠는 img 의 object-fit(contain|cover)을 따라 사진 영역 아래에 놓인다.
+// 주소가 가리키는 파일이 없으면(APK 예전 사진 — 주소를 stat 없이 만든다, 속도 감사 #4) <img> error 에서 회색 「!」.
+// 누수 막기(속도 감사 #6): router 가 화면을 바꿀 때 sweep() — 떨어진 칸은 바로 관찰을 끊고 목록에서 뺀다.
 import * as store from '../../data/store.js';
 import * as render from '../../media/render.js';
 import { isTyping, onTyping } from '../dom.js';
@@ -133,10 +135,21 @@ function mergeCh(a, ch) {
   return a;
 }
 
+function forget(box) { live.delete(box); io?.unobserve(box); ro?.unobserve(box._img); box._gen = (box._gen || 0) + 1; }
+// 떨어진 칸 정리 — 한 번이라도 붙어 있던 칸(_seen)은 바로, 아직 안 붙은 칸(만든 직후)은 10초 유예
+export function sweep(phase = 'after') {
+  const now = Date.now();
+  for (const box of [...live]) {
+    if (box.isConnected) { box._seen = true; continue; }
+    if (phase !== 'before' && (box._seen || now - box._t > 10000)) forget(box);
+  }
+}
+export const liveCount = () => live.size;                                  // 시험·측정용
+
 function apply(ch) {
   for (const box of [...live]) {
     if (!box.isConnected) {
-      if (box._seen || Date.now() - box._t > 10000) { live.delete(box); io?.unobserve(box); ro?.unobserve(box._img); }
+      if (box._seen || Date.now() - box._t > 10000) forget(box);
       continue;
     }
     box._seen = true;
@@ -166,6 +179,14 @@ export function thumb(photoId, { className, onClick, alt = '사진' } = {}) {
   box.append(img);
   box._img = img; img._box = box;
   img.addEventListener('load', () => { if (img.dataset.state === 'preview') paintWm(box); });   // 미리보기 크기를 알게 되면 띠
+  img.addEventListener('error', () => {                                     // 주소의 파일이 없다(예전 사진 파일을 잃음 등) — 「!」
+    const st = img.dataset.state;
+    if (st !== 'ready' && st !== 'preview') return;                          // 자리표시(data:)가 실패한 것은 무시(되풀이 방지)
+    img.dataset.state = 'error';
+    img.classList.add('thumb-err');
+    setSrc(img, FAILED);
+    paintWm(box);
+  });
   if (onClick) {
     img.setAttribute('role', 'button');
     img.tabIndex = 0;

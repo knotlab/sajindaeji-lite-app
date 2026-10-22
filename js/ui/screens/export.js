@@ -150,7 +150,8 @@ export default {
         h('div', { class: 'xp-result-head' }, icon('zip'),
           h('div', { class: 'xp-result-text' },
             h('span', { class: 'xp-file-name', 'data-role': 'file-name', text: res.name }),
-            h('span', { class: 'xp-file-meta', text: [`사진 ${res.photos}장`, fmtSize(res.size), `${mdw(res.at)} ${hm(res.at)}`].filter(Boolean).join(' · ') }))),
+            h('span', { class: 'xp-file-meta', text: [`사진 ${res.photos}장`, res.locmaps ? `위치도 ${res.locmaps}장` : '', fmtSize(res.size), `${mdw(res.at)} ${hm(res.at)}`].filter(Boolean).join(' · ') }))),
+        res.locmapSkipped ? h('p', { class: 'xp-hint', 'data-role': 'locmap-skipped', text: `위치도 ${res.locmapSkipped}장은 도면 그림이 없어 뺐어요` }) : null,
         h('div', { class: 'xp-result-btns' }, ...btns),
         isApp() ? h('p', { class: 'xp-hint', text: '저장하면 문서/현장사진대지 lite 폴더에 들어가요' }) : null));
     }

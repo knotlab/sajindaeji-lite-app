@@ -13,7 +13,12 @@ let cleanup = null, token = 0, unlift = () => {};
 let minimize = null, historyOn = false;
 const intercepting = new WeakSet();
 const listeners = new Set();
+const sweepers = new Set();                        // 화면 바꿀 때 정리(썸네일 누수 막기 — 속도 감사 #6). fn('before'|'after')
 const $ = sel => document.querySelector(sel);
+
+// 화면을 바꿀 때마다: 'before' = 앞 화면을 치우기 직전(아직 붙어 있음), 'after' = 새 화면을 붙인 직후
+export function onSweep(fn) { sweepers.add(fn); return () => sweepers.delete(fn); }
+function runSweep(phase) { for (const fn of sweepers) { try { fn(phase); } catch (e) { console.error('화면 정리 훅 실패', e); } } }
 
 export const nav = { go, replace, back, home, refresh };
 
@@ -61,6 +66,7 @@ function failScreen(root, name, e) {
 }
 
 function render() {
+  runSweep('before');
   unmount();
   const view = $('#view');
   if (!view) return;
@@ -85,6 +91,7 @@ function render() {
     }, e => { if (mine === token) failScreen(root, top.name, e); });
   }
   lift();
+  runSweep('after');
   emit(top);
 }
 

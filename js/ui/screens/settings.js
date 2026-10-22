@@ -422,6 +422,7 @@ export default {
       if (!r) return;
       const kids = [];
       if ('added' in r) kids.push(h('p', { class: 'st-line', text: restoreText(r) }));
+      if (r.drawings?.missingFiles) kids.push(h('p', { class: 'st-line', 'data-role': 'restore-dwg-missing', text: `도면 원본 ${r.drawings.missingFiles}개를 다시 올려 주세요(핀·위치 맞춤은 되살렸어요)` }));
       if (r.gallery) kids.push(h('p', { class: 'st-line', text: `갤러리 원본 ${r.gallery.found ?? 0}장 되살림 · ${r.gallery.missing ?? 0}장 못 찾음` }));
       if (isNat && relinkBtn && !r.gallery && 'added' in r) kids.push(h('p', { class: 'st-hint', text: '사진이 비어 보이면 [갤러리 원본으로 사진 되살리기]를 눌러요.' }));
       restoreBox.replaceChildren(...kids);
@@ -459,6 +460,18 @@ export default {
       try {
         const u = await store.usage?.();
         if (u) lines.push(['앱 안 사진', `${u.photos}장 · ${fmtBytes(u.bytes)}`]);
+      } catch { /* 넘어감 */ }
+      // 도면보관함(원본 + 미리보기·타일 그림)·자료함 — 모듈이 없거나 못 열면 줄만 빠진다
+      try {
+        const M = await import('../../data/drawings.js');
+        const du = await M.usage?.();
+        if (du) lines.push(['도면', du.count ? `${du.count}개 · ${fmtBytes((du.bytes || 0) + (du.tiles || 0))}${du.tiles ? `(그림 ${fmtBytes(du.tiles)} 포함)` : ''} · 핀 ${du.pins || 0}` : '없음']);
+      } catch { /* 넘어감 */ }
+      try {
+        const D = await import('../../data/docs.js');
+        await D.ready?.();
+        const xu = await D.usage?.();
+        if (xu && Number.isFinite(xu.count)) lines.push(['자료함', xu.count ? `${xu.count}개 · ${fmtBytes(xu.bytes)}` : '없음']);
       } catch { /* 넘어감 */ }
       if (isNat) {
         try {
@@ -501,7 +514,7 @@ export default {
       section('백업',
         h('div', { class: 'st-card' }, autoLine, manualLine),
         h('div', { class: 'st-list st-gap' }, nowBtn, makeBtn, zipBox, restoreBtn, relinkBtn, progress, restoreBox),
-        h('p', { class: 'st-hint', text: '자료함 파일은 백업에 들어가지 않아요(원본 파일로 다시 올리면 돼요).' })),
+        h('p', { class: 'st-hint', text: '자료함·도면 파일은 백업에 들어가지 않아요(원본 파일로 다시 올리면 돼요). 도면의 핀·위치 맞춤은 들어가요.' })),
       section('휴지통', trashBtn),
       section('정보', infoBox));
     const wrap = h('div', { class: 'scr-settings', 'data-screen': 'settings' }, scroll);

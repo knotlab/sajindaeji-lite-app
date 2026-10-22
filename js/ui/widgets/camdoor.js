@@ -97,6 +97,14 @@ export function camDoor({ onOpen, label = '카메라 열기' } = {}) {
     endT = setTimeout(() => { endT = 0; if (st === 'closing') set('closed'); }, CLOSE_MS + 20);
   }
 
+  // 움직임 없이 바로 활짝(크게 보기·지도에서 돌아옴 — 카메라는 붙잡혀 있어 바로 쓸 수 있다. 닫힌 문이 보였다 열리는 0.4초를 없앤다)
+  function openNow() {
+    if (dead || st === 'open') return;
+    clearTimers();
+    delete el.dataset.fail;
+    instant(() => set('open'));
+  }
+
   function destroy() {
     if (dead) return;
     dead = true;
@@ -105,5 +113,5 @@ export function camDoor({ onOpen, label = '카메라 열기' } = {}) {
     el.remove();
   }
 
-  return { el, state: () => st, opening, ready, fail, close, press, destroy };
+  return { el, state: () => st, opening, ready, fail, close, press, openNow, destroy };
 }

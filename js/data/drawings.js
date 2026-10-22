@@ -2,7 +2,8 @@
 // 자료함(data/docs.js — 엑셀·문서)과 따로: 도면(PDF 도면·DWG·DXF·도면 그림)만. 설계: docs/도면보관함-설계.md
 //
 // 저장
-// - 메타: 별도 IndexedDB `sajindaeji-lite-drawings` v1 — store 'drawings'(Drawing), 'pins'(Pin, 색인 drawingId·recordId), 'tiles'(타일 IDB 폴백)
+// - 메타: 별도 IndexedDB `sajindaeji-lite-drawings` v2 — store 'drawings'(Drawing), 'pins'(Pin, 색인 drawingId·recordId), 'tiles'(타일 IDB 폴백),
+//   'meta'(v2: 'purged' = 영구 삭제한 도면·핀 id — store.js purgedIds 와 같은 방식. 복구 후보가 「일부러 지운 것」을 잃은 것으로 보지 않게)
 //   사진·자료·스냅샷 DB 와 나눈다(스키마 충돌 없게, 백업 크기 따로).
 // - 원본 파일: data/photofs.js put('doc', 'dwgfile_'+id) — 자료함 파일과 같은 저장소(APK DATA/docs, 웹 OPFS docs/, 폴백 IDB)
 // - 타일 피라미드: OPFS `drawtiles/<drawingId>/<page>-<z>-<x>-<y>.jpg`(미리보기 한 장은 `<page>-pv.jpg`), 안 되면 이 DB 'tiles' 에 ArrayBuffer.
@@ -15,7 +16,8 @@
 import * as G from '../core/georef.js';
 
 export const DB_NAME = 'sajindaeji-lite-drawings';
-const DB_VER = 1;
+const DB_VER = 2;
+export const PURGED_MAX = 5000;                       // 영구 삭제 기록(tombstone) 상한 — 오래된 것부터 버린다
 export const MAX_BYTES = 200 * 1024 * 1024;          // 한 파일 상한(자료함과 같음)
 export const TRASH_MS = 30 * 24 * 60 * 60 * 1000;    // 휴지통 30일
 export const TILE_SIZE = 256;
@@ -187,21 +189,26 @@ export function matchDrawing(d, q, pinNames = '') {
 const recent = d => d.lastOpenedAt || d.addedAt || 0;
 export const drawingOrder = (a, b) => ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) || (recent(b) - recent(a));
 
-// ---- 백업(작은 JSON: 도면 메타 + 기준점 + 핀. 원본 파일·타일은 빼고) ----
+// ---- 백업(작은 JSON: 도면 메타 + 기준점 + 핀 + 영구 삭제 기록. 원본 파일·타일은 빼고) ----
 export const DUMP_V = 1;
 const stripDrawing = d => ({
   ...d, fileStore: null,
   pages: (d.pages || []).map(p => ({ page: p.page, w: p.w, h: p.h, tiles: null, preview: null, snapAt: p.snapAt ?? null })),
 });
-export function makeDump(drawingList, pinList) {
-  return { v: DUMP_V, drawings: drawingList.map(stripDrawing), pins: pinList.map(p => ({ ...p })) };
+// purged: { drawings: [id], pins: [id] } — 영구 삭제 기록(있으면 백업에 같이 — 복원한 기기도 지운 것을 되살리지 않게)
+export function makeDump(drawingList, pinList, purged = null) {
+  const out = { v: DUMP_V, drawings: drawingList.map(stripDrawing), pins: pinList.map(p => ({ ...p })) };
+  if (purged && (purged.drawings?.length || purged.pins?.length)) out.purged = { drawings: [...(purged.drawings || [])], pins: [...(purged.pins || [])] };
+  return out;
 }
-// 둘 중 새것(updatedAt) — 같으면 이 기기 것. 복원으로 들어온 도면은 원본 파일이 없으니 missingFile
-export function mergeDump(cur = { drawings: [], pins: [] }, inc = { drawings: [], pins: [] }) {
+// 둘 중 새것(updatedAt) — 같으면 이 기기 것. 복원으로 들어온 도면은 원본 파일이 없으니 missingFile(저장소 부분이 파일을 찾으면 다시 잇는다)
+// skip: { drawings: Set|[], pins: Set|[] } — 이 기기에서 영구 삭제한 것(되살리지 않는다)
+export function mergeDump(cur = { drawings: [], pins: [] }, inc = { drawings: [], pins: [] }, skip = {}) {
   const out = { drawings: [], pins: [], added: 0, updated: 0, skipped: 0 };
+  const sd = new Set(skip.drawings || []), sp = new Set(skip.pins || []);
   const dm = new Map(cur.drawings.map(d => [d.id, d]));
   for (const d of inc?.drawings || []) {
-    if (!d?.id || !/^g_/.test(d.id)) { out.skipped++; continue; }
+    if (!d?.id || !/^g_/.test(d.id) || (sd.has(d.id) && !dm.has(d.id))) { out.skipped++; continue; }
     const c = dm.get(d.id);
     if (!c) { out.drawings.push({ ...stripDrawing(d), missingFile: true }); out.added++; continue; }
     if ((d.updatedAt || 0) > (c.updatedAt || 0)) {
@@ -213,7 +220,7 @@ export function mergeDump(cur = { drawings: [], pins: [] }, inc = { drawings: []
   }
   const pm = new Map(cur.pins.map(p => [p.id, p]));
   for (const p of inc?.pins || []) {
-    if (!p?.id || !/^q_/.test(p.id) || !p.drawingId) { out.skipped++; continue; }
+    if (!p?.id || !/^q_/.test(p.id) || !p.drawingId || ((sp.has(p.id) || sd.has(p.drawingId)) && !pm.has(p.id))) { out.skipped++; continue; }
     const c = pm.get(p.id);
     if (!c) { out.pins.push({ ...p }); out.added++; }
     else if ((p.updatedAt || 0) > (c.updatedAt || 0)) { out.pins.push({ ...p }); out.updated++; }
@@ -232,8 +239,9 @@ let pinCache = new Map();       // id → Pin(얼림)
 const tCache = new Map();       // drawingId → { geo, T } (geo 객체가 같으면 다시 계산하지 않음)
 let queue = Promise.resolve();
 const subs = new Set();
-const pend = { drawings: new Set(), pins: new Set() };
+const pend = { drawings: new Set(), pins: new Set(), real: false };
 let notifyQueued = false;
+let purged = { drawings: [], pins: [] };   // 영구 삭제 기록(넣은 순서, PURGED_MAX 까지) — 'meta' 'purged'
 let tileBackend = null;         // 'opfs' | 'idb'
 const urls = new Map();         // tileKey → objectURL (넣은 순서 = 오래된 순)
 
@@ -254,6 +262,7 @@ function openDb() {
         s.createIndex('drawingId', 'drawingId'); s.createIndex('recordId', 'recordId');
       }
       if (!db.objectStoreNames.contains('tiles')) db.createObjectStore('tiles', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });   // v2
     };
     rq.onsuccess = () => {
       const db = rq.result;
@@ -299,14 +308,16 @@ function serial(fn) {
   return p;
 }
 
-function changed(kind, ids) {
+// init: 처음 열 때 캐시를 채운 알림(바뀐 게 아니다 — ev.init, 백업·미러는 무시한다)
+function changed(kind, ids, { init = false } = {}) {
   for (const id of ids) pend[kind].add(id);
+  if (!init) pend.real = true;
   if (notifyQueued) return;
   notifyQueued = true;
   queueMicrotask(() => {
     notifyQueued = false;
-    const ev = { drawings: new Set(pend.drawings), pins: new Set(pend.pins) };
-    pend.drawings.clear(); pend.pins.clear();
+    const ev = { drawings: new Set(pend.drawings), pins: new Set(pend.pins), init: !pend.real };
+    pend.drawings.clear(); pend.pins.clear(); pend.real = false;
     for (const fn of [...subs]) { try { fn(ev); } catch (e) { console.error(e); } }
   });
 }
@@ -340,20 +351,35 @@ export function initDrawings(opts = {}) {
 export function ready() { return initP || initDrawings(); }
 async function initImpl({ dbName: name, now = Date.now() } = {}) {
   if (name && name !== dbName) { dbName = name; dbP = null; tileBackend = null; }
-  const [ds, ps] = await run(['drawings', 'pins'], 'readonly', s => [s.drawings.getAll(), s.pins.getAll()]).then(([a, b]) => [a.result, b.result]);
+  const [ds, ps, pg] = await run(['drawings', 'pins', 'meta'], 'readonly', s => [s.drawings.getAll(), s.pins.getAll(), s.meta.get('purged')]).then(rs => rs.map(r => r.result));
   cache = new Map(ds.map(d => [d.id, freezeDrawing(d)]));
   pinCache = new Map(ps.map(p => [p.id, Object.freeze(p)]));
+  purged = { drawings: Array.isArray(pg?.drawings) ? pg.drawings.slice(-PURGED_MAX) : [], pins: Array.isArray(pg?.pins) ? pg.pins.slice(-PURGED_MAX) : [] };
   tCache.clear();
   for (const d of [...cache.values()]) {             // 휴지통 30일 지난 도면 영구 삭제
     if (d.deletedAt && now - d.deletedAt > TRASH_MS) await purgeNow(d.id).catch(e => console.warn('지난 도면을 비우지 못했어요', e));
   }
   const oldPins = [...pinCache.values()].filter(p => p.deletedAt && now - p.deletedAt > TRASH_MS).map(p => p.id);
   if (oldPins.length) {
-    await run(['pins'], 'readwrite', s => { for (const id of oldPins) s.pins.delete(id); });
+    const tomb = withPurged([], oldPins);
+    await run(['pins', 'meta'], 'readwrite', s => { for (const id of oldPins) s.pins.delete(id); s.meta.put(tomb); });
+    setPurged(tomb);
     for (const id of oldPins) pinCache.delete(id);
+    changed('pins', oldPins);
   }
-  changed('drawings', cache.keys());
+  if (cache.size) changed('drawings', cache.keys(), { init: true });   // 화면이 처음 그리게 — 비었으면 알리지 않는다(백업·미러를 깨우지 않게)
 }
+// 영구 삭제 기록 — 새 기록(meta 줄)을 만들어 트랜잭션 안에서 put, 커밋 뒤 setPurged
+function withPurged(dIds = [], pIds = []) {
+  const add = (list, ids) => { const s = new Set(ids); return [...list.filter(x => !s.has(x)), ...ids].slice(-PURGED_MAX); };
+  return { key: 'purged', drawings: add(purged.drawings, dIds), pins: add(purged.pins, pIds) };
+}
+function setPurged(row) { purged = { drawings: row.drawings, pins: row.pins }; }
+// 영구 삭제한 도면·핀 id(백업·복구 판단용) → { drawings: [], pins: [] }
+export const purgedIds = () => ({ drawings: purged.drawings.slice(), pins: purged.pins.slice() });
+// 도면보관함이 「통째로 빈」 상태인지 — 도면이 하나도 없고(휴지통 포함) 영구 삭제 기록도 없음 = DB 를 잃었을 수 있다.
+//   일부러 다 지운 것(기록이 남음)은 비었다고 보지 않는다(부팅 복구 질문이 다시 뜨지 않게)
+export const looksLost = () => cache.size === 0 && purged.drawings.length === 0 && purged.pins.length === 0;
 
 // fn({ drawings: Set<id>, pins: Set<id> }) — 같은 틱 변경은 한 번에
 export function onDrawings(fn) { subs.add(fn); return () => subs.delete(fn); }
@@ -418,13 +444,14 @@ function patch(id, fn) {
   });
 }
 
-// patch: { name?, tags?, pinned?, site? } — 이름을 바꿔도 확장자는 지킨다(뷰어가 확장자로 형식을 고른다)
+// patch: { name?, tags?, pinned?, site?, pageCount? } — 이름을 바꿔도 확장자는 지킨다(뷰어가 확장자로 형식을 고른다)
 export function updateDrawing(id, p = {}, now = Date.now()) {
   return patch(id, d => {
     if ('name' in p) { let n = cleanName(p.name); if (d.ext && extOf(n) !== d.ext) n = `${n}.${d.ext}`; d.name = n; }
     if ('tags' in p) d.tags = String(p.tags ?? '').normalize('NFC').trim();
     if ('pinned' in p) d.pinned = !!p.pinned;
     if ('site' in p) d.site = String(p.site ?? '');
+    if ('pageCount' in p) d.pageCount = Math.max(1, Math.round(+p.pageCount) || 1);   // 여러 쪽 PDF(쪽 고르기) — media/drawtiles.js 가 처음 뜰 때 알린다
     d.updatedAt = now;
   });
 }
@@ -441,13 +468,32 @@ async function purgeNow(id) {
     const fs = await fsMod();
     await fs.remove('doc', cur.fileId, cur.fileStore || undefined).catch(e => console.warn('도면 파일을 지우지 못했어요', e));
     await clearTilesNow(id, null).catch(e => console.warn('도면 타일을 지우지 못했어요', e));
-    const pinIds = [...pinCache.values()].filter(p => p.drawingId === id).map(p => p.id);
-    await run(['drawings', 'pins'], 'readwrite', s => { s.drawings.delete(id); for (const pid of pinIds) s.pins.delete(pid); });
+    const gonePins = [...pinCache.values()].filter(p => p.drawingId === id);
+    const pinIds = gonePins.map(p => p.id);
+    const tomb = withPurged([id], pinIds);
+    await run(['drawings', 'pins', 'meta'], 'readwrite', s => { s.drawings.delete(id); for (const pid of pinIds) s.pins.delete(pid); s.meta.put(tomb); });
+    setPurged(tomb);
     cache.delete(id); tCache.delete(id);
     for (const pid of pinIds) pinCache.delete(pid);
     changed('drawings', [id]); if (pinIds.length) changed('pins', pinIds);
+    unlinkRecords(gonePins);
   }
 }
+// 영구 삭제한 핀에 이어진 묶음의 record.pin 을 푼다(store.purgeRecord 가 핀 연결을 푸는 것과 짝 — 끊어진 참조가 백업에 남지 않게).
+// 뒤에서(기다리지 않음). 저장소가 안 열려 있으면(시험·부팅 전) 건너뛴다 — 묶음 화면은 없는 핀을 「핀 없음」으로 본다
+function unlinkRecords(list) {
+  const pairs = list.filter(p => p?.recordId).map(p => [p.recordId, p.id]);
+  if (!pairs.length) return;
+  import('./store.js').then(async S => {
+    if (!S.isReady?.()) return;
+    for (const [rid, pid] of pairs) {
+      const r = S.record(rid);
+      if (r?.pin?.pinId === pid) await S.updateRecord(rid, { pin: null }).catch(e => console.warn('묶음 핀 연결을 풀지 못했어요', rid, e));
+    }
+  }).catch(() => {});
+}
+// 도면에 이어진 묶음 수(살아 있는 핀 중 recordId 가 있는 것) — 도면을 지울 때 알린다
+export const linkedRecordCount = drawingId => new Set([...pinCache.values()].filter(p => p.drawingId === drawingId && !p.deletedAt && p.recordId).map(p => p.recordId)).size;
 
 // 원본 파일(Blob) — 뷰어(docFrame)로 쪽을 그려 타일을 뜰 때
 export async function drawingBlob(id) {
@@ -713,7 +759,7 @@ export function addPin({ drawingId, page = 1, x, y, name = '', note = '', color 
     const no = nextPinNo(pins(drawingId, { deleted: false }).concat(pins(drawingId, { deleted: true })), d.pinSeq);
     const given = cleanPinName(name);
     const auto = !given;
-    const p = newPin({ drawingId, page, x, y, no, name: given || defaultPinName({ no, recordLabel }), nameAuto: auto && !!cleanPinName(recordLabel), note, color, recordId, now });
+    const p = newPin({ drawingId, page, x, y, no, name: given || defaultPinName({ no, recordLabel }), nameAuto: auto && (!!cleanPinName(recordLabel) || !!recordId), note, color, recordId, now });
     const fz = Object.freeze(p);
     const nd = freezeDrawing({ ...d, pinSeq: no, updatedAt: now });
     await run(['pins', 'drawings'], 'readwrite', s => { s.pins.put(fz); s.drawings.put(nd); });
@@ -752,9 +798,13 @@ export function restorePin(id, now = Date.now()) { return patchPin(id, q => { q.
 export function purgePin(id) {
   return serial(async () => {
     if (!pinCache.has(id)) return;
-    await run(['pins'], 'readwrite', s => { s.pins.delete(id); });
+    const gone = pinCache.get(id);
+    const tomb = withPurged([], [id]);
+    await run(['pins', 'meta'], 'readwrite', s => { s.pins.delete(id); s.meta.put(tomb); });
+    setPurged(tomb);
     pinCache.delete(id);
     changed('pins', [id]);
+    unlinkRecords([gone]);
   });
 }
 // 묶음 위치 글이 바뀌면 그 묶음의 「기본 이름」 핀만 따라 바꾼다(직접 고친 이름은 그대로) → 바꾼 개수
@@ -763,7 +813,7 @@ export function syncRecordPinNames(recordId, label, now = Date.now()) {
     await ready();
     const n = cleanPinName(label);
     const list = [...pinCache.values()].filter(p => p.recordId === recordId && p.nameAuto && !p.deletedAt)
-      .map(p => ({ ...p, name: n || `핀 ${p.no}`, nameAuto: !!n, updatedAt: now })).filter(p => p.name !== pinCache.get(p.id).name);
+      .map(p => ({ ...p, name: n || `핀 ${p.no}`, nameAuto: true, updatedAt: now })).filter(p => p.name !== pinCache.get(p.id).name);
     await savePins(list);
     return list.length;
   });
@@ -771,21 +821,45 @@ export function syncRecordPinNames(recordId, label, now = Date.now()) {
 
 // ---- 백업·복원(작은 JSON) ----
 export function dumpDrawings() {
-  return makeDump([...cache.values()], [...pinCache.values()]);
+  return makeDump([...cache.values()], [...pinCache.values()], purged);
 }
-// → { added, updated, skipped } — 원본 파일이 없는 도면은 missingFile(도면보관함에 「원본 파일을 다시 올려 주세요」)
+// → { added, updated, skipped, relinked } — 원본 파일이 없는 도면은 missingFile(도면보관함에 「원본 파일을 다시 올려 주세요」).
+//   원본 파일 경로는 id 로 정해진다(photofs 'doc'/'dwgfile_'+id) — APK 는 DATA/docs 에 있어 IDB 를 잃어도 남는다. 있으면 다시 잇는다(relinked)
+//   이 기기에서 영구 삭제한 도면·핀은 되살리지 않고, 들어온 영구 삭제 기록은 합친다
 export function mergeDrawings(dump) {
   return serial(async () => {
     await ready();
-    if (!dump || dump.v !== DUMP_V) return { added: 0, updated: 0, skipped: 0 };
-    const r = mergeDump({ drawings: [...cache.values()], pins: [...pinCache.values()] }, dump);
+    if (!dump || dump.v !== DUMP_V) return { added: 0, updated: 0, skipped: 0, relinked: 0 };
+    const r = mergeDump({ drawings: [...cache.values()], pins: [...pinCache.values()] }, dump, purged);
+    let relinked = 0;
+    const inMerge = new Set(r.drawings.map(d => d.id));
+    const lost = [...r.drawings.filter(d => d.missingFile), ...[...cache.values()].filter(d => d.missingFile && !inMerge.has(d.id))];
+    if (lost.length) {
+      const fs = await fsMod().catch(() => null);
+      for (const d of lost) {
+        const st = await Promise.resolve(fs?.has?.('doc', d.fileId || fileIdOf(d.id))).catch(() => null);
+        if (!st) continue;
+        const nd = { ...d, fileId: d.fileId || fileIdOf(d.id), fileStore: st };
+        delete nd.missingFile;
+        const i = r.drawings.findIndex(x => x.id === d.id);
+        if (i >= 0) r.drawings[i] = nd; else r.drawings.push(nd);
+        relinked++;
+      }
+    }
+    const inP = dump.purged && typeof dump.purged === 'object' ? dump.purged : null;
+    const newD = (inP?.drawings || []).filter(id => typeof id === 'string' && !cache.has(id) && !purged.drawings.includes(id));
+    const newP = (inP?.pins || []).filter(id => typeof id === 'string' && !pinCache.has(id) && !purged.pins.includes(id));
+    const tomb = newD.length || newP.length ? withPurged(newD, newP) : null;
     const ds = r.drawings.map(freezeDrawing), ps = r.pins.map(p => Object.freeze(p));
-    if (ds.length || ps.length) await run(['drawings', 'pins'], 'readwrite', s => { for (const d of ds) s.drawings.put(d); for (const p of ps) s.pins.put(p); });
+    if (ds.length || ps.length || tomb) {
+      await run(['drawings', 'pins', 'meta'], 'readwrite', s => { for (const d of ds) s.drawings.put(d); for (const p of ps) s.pins.put(p); if (tomb) s.meta.put(tomb); });
+      if (tomb) setPurged(tomb);
+    }
     for (const d of ds) { cache.set(d.id, d); tCache.delete(d.id); }
     for (const p of ps) pinCache.set(p.id, p);
     if (ds.length) changed('drawings', ds.map(d => d.id));
     if (ps.length) changed('pins', ps.map(p => p.id));
-    return { added: r.added, updated: r.updated, skipped: r.skipped };
+    return { added: r.added, updated: r.updated, skipped: r.skipped, relinked };
   });
 }
 
@@ -797,4 +871,4 @@ export async function usage() {
 }
 
 // 시험용: 메모리 상태 비우기(DB 는 그대로)
-export function _reset() { cache = new Map(); pinCache = new Map(); tCache.clear(); initP = null; dbP = null; tileBackend = null; for (const u of urls.values()) URL.revokeObjectURL(u); urls.clear(); }
+export function _reset() { cache = new Map(); pinCache = new Map(); purged = { drawings: [], pins: [] }; tCache.clear(); initP = null; dbP = null; tileBackend = null; for (const u of urls.values()) URL.revokeObjectURL(u); urls.clear(); }

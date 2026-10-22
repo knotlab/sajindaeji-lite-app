@@ -9,27 +9,39 @@ export const WM_BAND_COLOR = 'rgba(0,0,0,0.62)';
 export const WM_BAR_COLOR = '#FFC400';
 export const wmFont = (font, bold) => `${bold ? 800 : 600} ${font}px system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif`;
 
+// 촬영 일시 넣기(사용자 지시 2026-10-22 「시간 박는 것도 옵션으로」): 날짜+시간 / 날짜만 / 안 넣기.
+// 옛 설정 wmDate(참·거짓)만 있으면 참 → 'datetime', 거짓 → 'off' 로 읽는다.
+export const WM_WHEN = ['datetime', 'date', 'off'];
+export function wmWhenOf(settings = {}) {
+  if (WM_WHEN.includes(settings?.wmWhen)) return settings.wmWhen;
+  return settings?.wmDate === false ? 'off' : 'datetime';
+}
+
 export function wmOpts(settings = {}) {
   const mode = WM_MODES.includes(settings?.wmMode) ? settings.wmMode : 'loc+content';
-  return { mode, date: settings?.wmDate !== false, onScreen: settings?.wmOnScreen !== false };
+  const when = wmWhenOf(settings);
+  return { mode, when, date: when !== 'off', onScreen: settings?.wmOnScreen !== false };
 }
 
 // 내용은 여러 줄 — 사진에 박히는 글은 줄바꿈(둘레 공백 포함)을 공백 하나로(원본 compose.js)
 export const oneLine = s => String(s ?? '').trim().replace(/\s*[\r\n]\s*/g, ' ');
 
-// 촬영 일시 — 수동 입력은 날짜만, 파일 시각이거나 없으면 '촬영일 미상'(원본 규칙)
-export function whenText(photo) {
+// 촬영 일시 — 수동 입력은 날짜만, 파일 시각이거나 없으면 '촬영일 미상'(원본 규칙). when: 'datetime'|'date'|'off'
+export function whenText(photo, when = 'datetime') {
+  if (when === 'off') return '';
   const src = photo?.takenAtSource;
   if (!photo?.takenAt || src === 'file') return '촬영일 미상';
-  if (src === 'manual') return dotDate(photo.takenAt);
+  if (src === 'manual' || when === 'date') return dotDate(photo.takenAt);
   return `${dotDate(photo.takenAt)} ${hm(photo.takenAt)}`;
 }
 
-export function watermarkLines(record, photo, { mode = 'loc+content', date = true } = {}) {
+// opts 는 wmOpts() 결과를 그대로 넘겨도 되고, 옛 호출처럼 { mode, date } 만 줘도 된다
+export function watermarkLines(record, photo, { mode = 'loc+content', date = true, when } = {}) {
   if (mode === 'off') return [];
   const lines = [oneLine(record?.location) || '위치 미입력'];
   if (mode === 'loc+content') { const c = oneLine(record?.content); if (c) lines.push(c); }
-  if (date) lines.push(whenText(photo));
+  const w = WM_WHEN.includes(when) ? when : (date ? 'datetime' : 'off');
+  if (w !== 'off') lines.push(whenText(photo, w));
   return lines;
 }
 

@@ -1,4 +1,4 @@
-// 현위치 — 참조 계수 방식(SPEC §5.6). 화면이 보일 때 start(), 떠날 때 stop. 모두 stop 이면 watch 해제(배터리).
+// 현위치 — 참조 계수 방식(SPEC §5.6). 화면이 보일 때 start(), 떠날 때 stop. 모두 stop 이면 20초 뒤 watch 해제(배터리 — 화면 전환 사이엔 이어 감).
 // APK 는 native.geoWatch(@capacitor/geolocation, interval 3초)만 쓰고, 웹은 navigator.geolocation.watchPosition.
 // 주소(VWorld)는 geo.shouldRegeocode 가 참일 때만 묻고 메모리에만 둔다(약관: 저장 금지).
 import { isNative, plugin, geoWatch, geoClear, geoRequest, onPause, onResume } from '../platform/native.js';
@@ -44,16 +44,24 @@ export function fixForPhoto(now = Date.now()) {
   return { lat: p.lat, lng: p.lng, acc: p.acc, at: p.at };
 }
 
+// 모두 stop 해도 바로 끄지 않고 LINGER_MS 뒤에 끈다(속도 감사 #5② — 화면을 오갈 때마다 watch 를 껐다 켜며 「찾는 중」이 다시 뜨고
+// Fused 위치가 처음부터 다시 잡히던 것). 그 사이 start 가 오면 그대로 이어 간다. 앱이 숨으면(pause) 지금처럼 바로 끈다
+let LINGER_MS = 20000, lingerTimer = null;
+function cancelLinger() { if (lingerTimer) { clearTimeout(lingerTimer); lingerTimer = null; } }
 export function start() {
   refs++;
   hookLifecycle();
+  cancelLinger();
   if (refs === 1) begin();
   let stopped = false;
   return function stop() {
     if (stopped) return;
     stopped = true;
     refs = Math.max(0, refs - 1);
-    if (refs === 0) end('off');
+    if (refs !== 0) return;
+    if (LINGER_MS <= 0) { end('off'); return; }
+    cancelLinger();
+    lingerTimer = setTimeout(() => { lingerTimer = null; if (refs === 0) end('off'); }, LINGER_MS);
   };
 }
 
@@ -69,7 +77,10 @@ export function refreshAddress() { lastReq = null; if (snap.pos) maybeGeocode(sn
 function hookLifecycle() {
   if (lifeHooked || typeof document === 'undefined') return;
   lifeHooked = true;
-  onPause(() => { if (running) { paused = true; end(null); } });
+  onPause(() => {
+    if (refs === 0 && (running || lingerTimer)) { cancelLinger(); end('off'); return; }   // 끄기를 기다리던 중 — 바로 끈다
+    if (running) { paused = true; end(null); }
+  });
   onResume(() => { if (paused) { paused = false; if (refs > 0) begin(); } });
 }
 
@@ -148,7 +159,8 @@ async function maybeGeocode(pos, force = false) {
 
 // ---- 시험용 ----
 export function _setSource(geo) { geoSource = geo || null; }
+export function _setLinger(ms) { LINGER_MS = Number(ms) || 0; }               // 시험용(0 = 마지막 stop 에 바로 끔)
 export function _reset() {
-  end(null); refs = 0; paused = false; lastReq = null; inflight = false; lastPosEmit = 0; held = false; heldDirty = false; heldGeo = false;
+  cancelLinger(); end(null); refs = 0; paused = false; lastReq = null; inflight = false; lastPosEmit = 0; held = false; heldDirty = false; heldGeo = false;
   snap = Object.freeze({ state: 'off', pos: null, addr: null, addrState: 'idle', addrError: null });
 }

@@ -1,7 +1,10 @@
-// 촬영 화면 `capture` (SPEC §6.4, §10.6 도면 띄우고 촬영) — 담당 G
+// 촬영 화면 `capture` (SPEC §6.4, §10.6 도면 띄우고 촬영, 도면보관함 설계 §5.6) — 담당 G
 // 세로 화면 + 가로 사진: 위에 화면 폭 전체의 가로 상자 뷰파인더, 그 아래 GPS 줄·내용 줄·사진 줄, 맨 아래 조작(엄지 영역).
-// params: { recordId?(이어 찍기), day?, docId?, current?(이 화면이 만든 묶음 id — 다시 그려져도 같은 묶음), draftLoc?, draftContent?, createdHere? }
-// 묶음은 첫 사진(또는 휴대폰 카메라 앱을 띄우기 직전)에 만든다. 위치·내용만 고치면 묶음을 만들지 않고 params 에 초안으로 둔다(review-notes).
+// params: { recordId?(이어 찍기), day?, docId?(자료), drawingId?·page?(도면), current?(이 화면이 만든 묶음 id — 다시 그려져도 같은 묶음),
+//           draftLoc?, draftContent?, createdHere?, camOn?(크게 보기·지도에서 돌아옴 — 문을 바로 연다) }
+// 묶음은 첫 사진(또는 휴대폰 카메라 앱을 띄우기 직전·도면에 위치를 찍기 직전)에 만든다. 위치·내용만 고치면 묶음을 만들지 않고 params 에 초안으로 둔다(review-notes).
+// 카메라 문(사용자 지시): 들어와도 카메라를 켜지 않는다 — [카메라 열기](또는 셔터) → 문 반쯤 + camera.open → 첫 프레임에 활짝. 백그라운드면 닫히고 돌아와도 자동으로 안 열린다.
+// 띄우는 것 두 가지: [자료](자료함 — 엑셀·문서 등, 뷰어 iframe docFrame) / [도면](도면보관함 — 가벼운 타일 보기 drawingView + [📍 위치 찍기] 이름 핀)
 import * as dom from '../dom.js';
 import * as store from '../../data/store.js';
 import * as camera from '../../media/camera.js';
@@ -11,6 +14,7 @@ import * as gps from '../../services/gps.js';
 import * as native from '../../platform/native.js';
 import * as thumbW from '../widgets/thumb.js';
 import * as gpslineW from '../widgets/gpsline.js';
+import { camDoor } from '../widgets/camdoor.js';
 import * as config from '../../config.js';
 import { watermarkLines, watermarkLayout, drawWatermark, wmOpts, wmFont } from '../../core/watermark.js';
 import { dayKey } from '../../core/date.js';
@@ -20,11 +24,29 @@ const RATIO_LABEL = { '4:3': '가로 4:3', '16:9': '가로 16:9', '3:4': '세로
 const RATIO_NUM = { '4:3': 4 / 3, '16:9': 16 / 9, '3:4': 3 / 4 };
 const STALE = config.STALE_MS || 10 * 60 * 1000;
 const SAVE_WAIT_MS = 8000;                                                   // 뒤로·저장하고 다음 전에 incoming 저장을 기다리는 한도
+const KEEP_CAM_MS = 30000;                                                   // 크게 보기·지도에 다녀오는 동안 카메라를 붙잡는 한도(속도 감사 #5 ④)
+const LATER_MS = 1500;                                                       // 화면 꺼짐 방지·GPS 끄기를 미루는 시간(감사 #5 ②③ — 금방 돌아오면 브리지 호출 0)
+const QUICK_PIN_ACC = 15;                                                    // 위치 맞춘 도면에 내 위치로 바로 핀(1탭) — GPS ±15m 안일 때만
+const QUICK_PIN_AGE = 30000;
 
 let active = null;                                                           // 지금 붙어 있는 화면(onBack 용)
 
 const imp = p => import(p).catch(err => { console.warn('선택 모듈을 못 불렀어요', p, err); return null; });
 const fn = (mod, name) => (mod && typeof mod[name] === 'function' ? mod[name] : null);
+
+// 화면 꺼짐 방지 — 화면 밖(모듈)에서 센다. 나갈 때 끄기를 LATER_MS 미뤄 크게 보기·지도에서 돌아오면 취소(브리지 호출 0)
+let awakeOn = false, awakeOffT = 0, awakeMod = null;
+function holdAwake(mod) {
+  if (mod) awakeMod = mod;
+  clearTimeout(awakeOffT); awakeOffT = 0;
+  if (awakeOn || !awakeMod) return;
+  awakeOn = true;
+  safe(() => awakeMod.keepAwake?.(true)?.catch?.(() => {}));
+}
+function dropAwakeLater() {
+  clearTimeout(awakeOffT);
+  awakeOffT = setTimeout(() => { awakeOffT = 0; if (!awakeOn) return; awakeOn = false; safe(() => awakeMod?.keepAwake?.(false)?.catch?.(() => {})); }, LATER_MS);
+}
 
 function el(tag, attrs, ...kids) {                                           // dom.h + 이벤트는 addEventListener 로(h 의 on 처리 방식과 무관하게)
   const { onclick, hidden, ...rest } = attrs || {};
@@ -49,8 +71,8 @@ function camErrorText(err) {
     : '카메라 권한이 막혀 있어요. 주소창의 자물쇠를 눌러 카메라를 허용해 주세요.';
   if (code === 'nocamera') return '카메라를 찾지 못했어요. 휴대폰 카메라 앱이나 갤러리로 넣어 주세요.';
   if (code === 'insecure') return 'https 주소에서만 카메라를 쓸 수 있어요.';
-  if (code === 'busy') return '다른 앱이 카메라를 쓰고 있어요. 그 앱을 닫고 [다시 시도]를 눌러 주세요.';
-  return '카메라를 열지 못했어요. [다시 시도]를 누르거나 카메라 앱으로 찍어 주세요.';
+  if (code === 'busy') return '다른 앱이 카메라를 쓰고 있어요. 그 앱을 닫고 [다시 열기]를 눌러 주세요.';
+  return '카메라를 열지 못했어요. [다시 열기]를 누르거나 카메라 앱으로 찍어 주세요.';
 }
 const saveErrText = err => (err?.code === 'QUOTA' ? '저장 공간이 모자라요. 사진을 정리해 주세요' : '사진을 저장하지 못했어요');
 
@@ -76,6 +98,9 @@ function mount(root, params = {}, nav = {}) {
   const todayAtMount = dayKey(Date.now());
   const fixedDay = params.day && params.day !== todayAtMount ? params.day : null;   // 과거 날짜만 고정, 오늘이면 묶음을 만드는 순간의 오늘
   const live = id => { const r = id && store.record(id); return r && !r.deletedAt ? r : null; };
+  const syscamMode = safe(() => store.settings(), {}).captureMode === 'syscam';
+  const camOnAtMount = !!params.camOn;                                       // 크게 보기·지도에서 돌아옴 — 문을 바로 연다(붙잡아 둔 카메라를 이어 씀)
+  params.camOn = false;
 
   let recId = live(params.recordId)?.id || live(params.current)?.id || null;
   if (!recId) { params.current = null; }
@@ -83,53 +108,76 @@ function mount(root, params = {}, nav = {}) {
   let loc = recId ? store.record(recId).location : (params.draftLoc ?? safe(() => store.lastLocation(), ''));
   let content = recId ? store.record(recId).content : (params.draftContent ?? '');
   let freshHint = !!params.freshHint;                                        // [저장하고 다음] 직후 "이어받은 위치 · 맞나요?"
-  let dead = false, leaving = false, grabbing = false, inflight = 0, creating = null, lastPress = 0;
+  let dead = false, leaving = false, grabbing = false, inflight = 0, creating = null, lastPress = 0, subNav = false;
   let resting = false, restN = 0, typingOn = false;                          // 글 입력 시트가 떠 있는 동안 쉼(아래 「쉬기」)
-  let camOpen = false, camFailed = false, camCaps = null, opening = null;
+  let camOpen = false, camFailed = false, camCaps = null, opening = null, camGen = 0;
   let orient = 0, ratio = (safe(() => store.settings(), {}).photoRatio) || '4:3';
-  let layoutMode = 'cam', frame = null, docId = null, docsMod = null, awake = null;
+  // 띄운 것: 자료(docId — docFrame) 또는 도면(dwgId·dwgPage — drawingView). 한 번에 하나
+  let layoutMode = 'cam', frame = null, docId = null, docsMod = null;
+  let dwgId = null, dwgPage = 1, dwgMod = null, dvMod = null, view = null, viewCompact = null, georef = null;
+  let placing = null;                                                        // 도면 위치 찍기 중: { pinId?, prevLayout }
+  let restoreLayout = null;                                                   // 되살릴 배치(meta captureLayout) — 띄울 것이 실제로 뜰 때 적용(그 전엔 cam)
   const shots = new Map();                                                   // 누른 시각(takenAt) → { settled } — incoming 저장 확인용
   const cleanups = [];
   let hideSnack = null, docTopAt = 0;                                        // [저장하고 다음] 스낵바 닫기 · 도면 작은 창 목표 위치(스낵바 올리기)
+  const shown = () => !!(docId || dwgId);
 
   // ---------- DOM ----------
   const backBtn = el('button', { type: 'button', class: 'icbtn cap-back', 'aria-label': '뒤로', onclick: () => leave() }, ic('back'));
   const locText = el('span', { class: 'cap-loc-text' });
   const locSub = el('small', { class: 'cap-loc-sub' });
   const locChip = el('button', { type: 'button', class: 'cap-loc', 'data-testid': 'loc-chip', onclick: editLoc }, ic('map'), locText, locSub);
-  const layoutBtn = el('button', { type: 'button', class: 'icbtn cap-layout-btn cap-rot', 'data-testid': 'cap-layout', 'aria-label': '도면·카메라 크게 바꾸기', hidden: true, onclick: () => toggleLayout() }, ic('swap'));
-  const top = el('div', { class: 'cap-top' }, backBtn, locChip);              // 배치 바꾸기는 도면 줄 안에(위치 칩이 좁아져 글이 잘리지 않게)
+  // [자료](자료함)·[도면](도면보관함) — 늘 보이는 위 줄. 아이콘 위 + 글자 아래(좁은 폭에서도 위치 칩이 넉넉하게)
+  const docsBtn = el('button', { type: 'button', class: 'cap-top-btn cap-docs-btn', 'data-testid': 'cap-docs-btn', 'aria-label': '자료 열기', onclick: () => chooseDoc() }, ic('folder'), el('span', { class: 'cap-top-lab' }, '자료'));
+  const dwgBtn = el('button', { type: 'button', class: 'cap-top-btn cap-drawing-btn', 'data-testid': 'cap-drawing-btn', 'aria-label': '도면 열기', onclick: () => chooseDrawing() }, ic('drawing'), el('span', { class: 'cap-top-lab' }, '도면'));
+  const top = el('div', { class: 'cap-top' }, backBtn, locChip, docsBtn, dwgBtn);
 
+  const layoutBtn = el('button', { type: 'button', class: 'icbtn cap-layout-btn cap-rot', 'data-testid': 'cap-layout', 'aria-label': '도면·카메라 크게 바꾸기', onclick: () => toggleLayout() }, ic('swap'));
+  const fullBtn = el('button', { type: 'button', class: 'icbtn cap-doc-full', 'data-testid': 'cap-doc-full', 'aria-label': '전체 화면으로 보기', onclick: () => openFull() }, ic('zoom'));
+  const docIcon = el('span', { class: 'cap-doc-ic' }, ic('doc'));
   const docName = el('span', { class: 'cap-doc-name' });
+  const docNameBtn = el('button', { type: 'button', class: 'cap-doc-namebtn', 'aria-label': '다른 것 띄우기', onclick: () => (dwgId ? chooseDrawing() : chooseDoc()) }, docIcon, docName);
   const docChip = el('div', { class: 'cap-doc-chip', 'data-testid': 'cap-doc-chip', hidden: true },
-    ic('doc'), docName,
-    el('button', { type: 'button', class: 'cap-doc-act', onclick: () => chooseDoc() }, '바꾸기'),
-    layoutBtn,
-    el('button', { type: 'button', class: 'cap-doc-x', 'aria-label': '도면 닫기', onclick: () => setDoc(null) }, ic('close')));
+    docNameBtn, layoutBtn, fullBtn,
+    el('button', { type: 'button', class: 'cap-doc-x', 'aria-label': '닫기', onclick: () => closeShown() }, ic('close')));
   const sugName = el('span', { class: 'cap-sug-name' });
-  let sugId = null;
+  let sug = null;                                                            // { kind:'dwg'|'doc', id, page? }
   const sugLab = el('span', { class: 'cap-sug-lab' }, '근처 도면');
-  const sugAct = el('button', { type: 'button', class: 'cap-doc-act', onclick: () => (sugId ? setDoc(sugId) : chooseDoc()) }, '띄우기');
-  const suggest = el('div', { class: 'cap-suggest', 'data-testid': 'cap-doc-suggest', hidden: true }, sugLab, sugName, sugAct);
+  // 제안 = 셔터 위 줄의 단추 하나(누르면 띄우기). 늦게 떠도 뷰파인더·[카메라 열기]를 밀지 않는다
+  const suggest = el('button', { type: 'button', class: 'cap-suggest', 'data-testid': 'cap-doc-suggest', hidden: true,
+    onclick: () => { if (!sug) return; if (sug.kind === 'dwg') setDrawing(sug.id, sug.page); else setDoc(sug.id); } },
+    sugLab, sugName, el('span', { class: 'cap-doc-act' }, '띄우기'));
 
   const video = el('video', { class: 'cap-video', autoplay: '', muted: '', playsinline: '' });
   video.muted = true; video.playsInline = true; video.autoplay = true;
   const wmCanvas = el('canvas', { class: 'cap-wm', 'aria-hidden': 'true' });
   const ratioBtn = el('button', { type: 'button', class: 'cap-ratio cap-rot', 'data-testid': 'cap-ratio', onclick: cycleRatio });
   const torchBtn = el('button', { type: 'button', class: 'icbtn cap-torch cap-rot', 'aria-label': '플래시', 'aria-pressed': 'false', hidden: true, onclick: toggleTorch }, ic('flash'));
+  // 휴대폰 카메라 앱 모드(설정 captureMode === 'syscam')에서만 — 앱 안 카메라 실패는 카메라 문이 알린다
   const fbText = el('p', { class: 'cap-fb-text' });
   const syscamBtn = el('button', { type: 'button', class: 'cap-fb-main', 'data-testid': 'syscam-btn', onclick: () => shootSystem() }, ic('camera'), '카메라 앱으로 찍기');
-  const retryBtn = el('button', { type: 'button', class: 'cap-fb-sub', hidden: true, onclick: () => openCam(true) }, '다시 시도');
   const fbGallery = el('button', { type: 'button', class: 'cap-fb-sub', onclick: () => pickGallery() }, ic('image'), '갤러리에서 고르기');
-  const fallback = el('div', { class: 'cap-fallback', 'data-testid': 'cam-fallback', hidden: true }, fbText, syscamBtn, el('div', { class: 'cap-fb-row' }, fbGallery, retryBtn));
-  const vf = el('div', { class: 'cap-vf', 'data-testid': 'cap-cam-mini' }, video, wmCanvas, ratioBtn, torchBtn, fallback);
-  vf.removeAttribute('data-testid');                                         // cam 배치에선 작은 창이 아니다 — doc 배치일 때만 붙인다
+  const fallback = el('div', { class: 'cap-fallback', 'data-testid': 'cam-fallback', hidden: true }, fbText, syscamBtn, el('div', { class: 'cap-fb-row' }, fbGallery));
+  const vf = el('div', { class: 'cap-vf' }, video, wmCanvas, ratioBtn, torchBtn, fallback);
+  // 카메라 문 — 누르면 문 반쯤 + camera.open, 첫 프레임에 활짝(camdoor 부품)
+  const door = camDoor({ onOpen: () => openCam() });
+  vf.append(door.el);
+  const onFirstFrame = () => { if (!dead && camOpen && door.state() === 'opening') door.ready(); };
+  video.addEventListener('playing', onFirstFrame);
+  video.addEventListener('loadeddata', onFirstFrame);
+  cleanups.push(() => { video.removeEventListener('playing', onFirstFrame); video.removeEventListener('loadeddata', onFirstFrame); door.destroy(); });
+
   const docWrap = el('div', { class: 'cap-docwrap', hidden: true });
+  const dwgBox = el('div', { class: 'cap-dwg', hidden: true });              // drawingView 자리(docFrame 과 같은 docWrap 안 — 배치 규칙 그대로)
+  const dwgTap = el('button', { type: 'button', class: 'cap-dwg-tap', 'aria-label': '도면 크게 보기', hidden: true, onclick: () => { if (layoutMode === 'cam') toggleLayout(); } });
+  docWrap.append(dwgBox, dwgTap);
   const box = el('div', { class: 'cap-box' }, vf);                         // docWrap 은 화면(.cap) 바로 아래 — 자리는 placeDoc 이 잡는다
   const stageWrap = el('div', { class: 'cap-stage' }, box);
 
+  // GPS 줄 — 누르면 실시간 위치 지도('map'). 카메라는 붙잡아 두고 돌아오면 이어 쓴다
   const gl = safe(() => gpslineW.gpsLine({ dark: true, compact: true }), null);
-  const gpsRow = el('div', { class: 'cap-gps' }, gl?.el || '');
+  const gpsRow = el('button', { type: 'button', class: 'cap-gps', 'data-testid': 'cap-gps', 'aria-label': '실시간 위치 지도 열기', onclick: () => goSub('map', {}) },
+    gl?.el || '', el('span', { class: 'cap-gps-go', 'aria-hidden': 'true' }, ic('map')));
 
   const contentText = el('span', { class: 'cap-content-text' });
   const contentRow = el('button', { type: 'button', class: 'cap-content', 'data-testid': 'content-row', onclick: editContent },
@@ -140,14 +188,20 @@ function mount(root, params = {}, nav = {}) {
 
   const count = el('span', { class: 'cap-count', 'data-testid': 'photo-count' });
   const pend = el('span', { class: 'cap-pending' });
+  const countText = el('span', { class: 'cap-count-t' }, count, pend);
+  // [📍 위치 찍기] — 도면이 떠 있을 때만, 셔터 바로 위(엄지 자리). 찍는 중이면 [찍기 취소]
+  const pinLab = el('span', { class: 'cap-pin-t' }, '위치 찍기');
+  const pinBtn = el('button', { type: 'button', class: 'cap-pin', 'data-testid': 'cap-pin', hidden: true, onclick: () => onPinBtn() }, ic('pin'), pinLab);
+  // 찍는 중 확정 [여기에 찍기] — 셔터 위 줄 오른쪽(엄지 자리). 도면 보기 부품의 아래 막대는 숨긴다(capture.css)
+  const placeOk = el('button', { type: 'button', class: 'cap-place-ok', 'data-testid': 'cap-place-ok', hidden: true, onclick: () => safe(() => view?.placeNow?.()) }, '여기에 찍기');
   const galleryBtn = el('button', { type: 'button', class: 'cap-gallery', 'data-testid': 'gallery-btn', onclick: () => pickGallery() }, el('span', { class: 'cap-rot' }, ic('image')), '갤러리');
   const shutter = el('button', { type: 'button', class: 'cap-shutter', 'data-testid': 'shutter', 'aria-label': '찍기', onclick: () => shoot() }, el('i'));
   const saveNext = el('button', { type: 'button', class: 'cap-next', 'data-testid': 'save-next', onclick: () => saveAndNext() }, continuing ? '다 찍었어요' : '저장하고 다음');
   const bot = el('div', { class: 'cap-bot dock' },                        // .dock: router 가 스낵바·토스트를 이 위로 올린다(셔터를 가리지 않게)
-    el('div', { class: 'cap-countrow' }, count, pend),
+    el('div', { class: 'cap-countrow' }, pinBtn, suggest, countText, placeOk),
     el('div', { class: 'cap-ctrl' }, galleryBtn, shutter, saveNext));
 
-  const screen = el('div', { class: 'cap', 'data-layout': 'cam', 'data-o': '0' }, top, docChip, suggest, stageWrap, gpsRow, contentRow, strip, spacer, bot, docWrap);
+  const screen = el('div', { class: 'cap', 'data-layout': 'cam', 'data-o': '0', 'data-pin': '0' }, top, docChip, stageWrap, gpsRow, contentRow, strip, spacer, bot, docWrap);
   root.append(screen);
 
   // ---------- 상태 그리기 ----------
@@ -228,13 +282,13 @@ function mount(root, params = {}, nav = {}) {
   }
   function makeThumb(p) {
     const no = el('span', { class: 'cap-th-no' });
-    const open = () => { if (recId) nav.go?.('viewer', { recordId: recId, photoId: p.id }); };
+    const open = () => { if (recId) goSub('viewer', { recordId: recId, photoId: p.id }); };
     const img = safe(() => thumbW.thumb(p.id, { className: 'cap-th-img', alt: '찍은 사진' }), null) || el('span', { class: 'cap-th-img' });
     return el('button', { type: 'button', class: 'cap-th', 'data-testid': 'strip-thumb', 'data-id': p.id, 'aria-label': '크게 보기', onclick: open }, img, no);
   }
   function paintPending(n) { pend.textContent = n > 0 ? `· 처리 중 ${n}` : ''; }
 
-  function paintAll() { if (dead) return; paintLoc(); paintContent(); paintStrip(); }
+  function paintAll() { if (dead) return; paintLoc(); paintContent(); paintStrip(); paintPinBtn(); }
 
   // ---------- 배치(세로 화면 + 가로 사진) ----------
   let lastBoxKey = '';
@@ -257,11 +311,12 @@ function mount(root, params = {}, nav = {}) {
     if (key !== lastBoxKey) { lastBoxKey = key; requestAnimationFrame(drawWm); }
     placeDoc();
   }
-  // 도면 자리 — doc 배치: 무대 전체. cam 배치: 사진 줄과 조작 버튼 사이 남는 자리(뷰파인더를 가리지 않게),
-  // 남는 자리가 너무 낮으면(작은 폰) 뷰파인더 오른쪽 아래 작은 창(폭 44%). iframe 은 옮기지 않고 자리만 바꾼다
+  // 띄운 것의 자리 — doc 배치: 무대 전체. cam 배치: 사진 줄과 조작 버튼 사이 남는 자리(뷰파인더를 가리지 않게),
+  // 남는 자리가 너무 낮으면(작은 폰) 뷰파인더 위쪽 모서리 작은 창(폭 40%) — 워터마크 띠(사진 아래쪽)·플래시를 피해서.
+  // 폰을 눕히면 띠가 옆으로 가니 반대쪽으로. iframe·도면 보기는 옮기지 않고 자리만 바꾼다
   const DOCK_MIN = 96;
   function placeDoc() {
-    if (!docId || docWrap.hidden) return;
+    if (!shown() || docWrap.hidden) return;
     const sr = screen.getBoundingClientRect();
     if (!sr.width) return;
     let l, t, w, hh, place;
@@ -272,22 +327,29 @@ function mount(root, params = {}, nav = {}) {
       const sp = spacer.getBoundingClientRect();
       if (sp.height >= DOCK_MIN) { l = 16; t = sp.top - sr.top + 4; w = sr.width - 32; hh = sp.height - 8; place = 'dock'; }
       else {
-        const b = box.getBoundingClientRect();
-        w = Math.round(b.width * 0.44); hh = Math.round(w * 3 / 4);
-        l = b.right - sr.left - 8 - w; t = b.bottom - sr.top - 8 - hh; place = 'corner';
+        // 뷰파인더 상자의 「목표」 크기(fit 이 정한 style)로 — 상자가 움직이는(150ms) 중의 getBoundingClientRect 로 잡으면 다 줄어든 뒤 어긋난다
+        const sb = stageWrap.getBoundingClientRect();
+        const bw = parseFloat(box.style.width) || sb.width, bh = parseFloat(box.style.height) || sb.height;
+        const left = sb.left + (sb.width - bw) / 2, right = left + bw, topY = sb.top, bottom = sb.top + bh;   // 상자는 무대 가운데·위에 붙는다(.cap-stage)
+        w = Math.round(bw * 0.40); hh = Math.round(w * 3 / 4);
+        const GAP = 56;                                                      // 플래시·비율 단추(44px + 여백)를 비켜서
+        if (orient === 270) { l = left - sr.left + 8; t = topY - sr.top + GAP; }                 // 띠가 오른쪽 → 왼쪽 위
+        else if (orient === 180) { l = right - sr.left - 8 - w; t = bottom - sr.top - GAP - hh; }   // 띠가 위 → 오른쪽 아래
+        else { l = right - sr.left - 8 - w; t = topY - sr.top + GAP; }                            // 띠가 아래(또는 왼쪽) → 오른쪽 위
+        place = 'corner';
       }
     }
-    docWrap.dataset.place = place;
+    if (docWrap.dataset.place !== place) docWrap.dataset.place = place;
     docTopAt = sr.top + t;                                                   // 목표 자리(움직이는 중의 getBoundingClientRect 가 아니라)
     Object.assign(docWrap.style, { left: `${Math.round(l)}px`, top: `${Math.round(t)}px`, width: `${Math.round(w)}px`, height: `${Math.round(hh)}px` });
     liftSnackOverDoc();
   }
   // 스낵바·토스트: 도면 작은 창이 사진 줄 아래(dock)에 있으면 그 위로, 아니면 조작 줄 위로(router 기본) — [저장하고 다음] 때마다 도면을 가리지 않게
-  cleanups.push(() => hideSnack?.());                                       // 화면을 떠나면 [되돌리기] 스낵바도 닫는다(떠난 뒤엔 되돌릴 수 없다)
+  cleanups.push(() => { hideSnack?.(); hidePinSnack?.(); });                 // 화면을 떠나면 [되돌리기]·[옮기기] 스낵바도 닫는다(떠난 뒤엔 되돌릴 수 없다)
   function liftSnackOverDoc() {
     const snack = document.getElementById('snack');
     if (!snack || dead) return;
-    if (docId && !docWrap.hidden && docWrap.dataset.place === 'dock') {
+    if (shown() && !docWrap.hidden && docWrap.dataset.place === 'dock') {
       const top = docTopAt || docWrap.getBoundingClientRect().top;
       snack.style.setProperty('--snack-lift', `${Math.max(0, Math.round(window.innerHeight - top - 8))}px`);
     } else snack.style.setProperty('--snack-lift', `${bot.offsetHeight}px`);
@@ -375,7 +437,7 @@ function mount(root, params = {}, nav = {}) {
     if (on === resting) return;
     resting = on;
     safe(() => camera.pause?.(on));
-    if (!on) { if (wmStale) { wmStale = false; drawWm(); } if (sugStale) { sugStale = false; paintSuggest(); } }
+    if (!on) { if (wmStale) { wmStale = false; drawWm(); } if (sugStale) { sugStale = false; paintSuggest(true); } }
   }
   async function resting_(p) {                                               // 시트 약속 p 가 끝날 때까지 쉰다(시트를 연 다음에 불러 포커스·키보드를 늦추지 않는다)
     restN++; setRest();
@@ -389,53 +451,59 @@ function mount(root, params = {}, nav = {}) {
   cleanups.push(() => { restN = 0; typingOn = false; safe(() => camera.pause?.(false)); resting = false; });
 
   // ---------- 카메라 ----------
-  function showFallback(text, { retry = false } = {}) {
+  // 휴대폰 카메라 앱 모드에서만 쓰는 안내 판(앱 안 카메라 실패는 카메라 문 door.fail 이 알린다)
+  function showFallback(text) {
     camFailed = true;
     fallback.hidden = false;
     fbText.textContent = text;
-    retryBtn.hidden = !retry;
     video.hidden = true; torchBtn.hidden = true; ratioBtn.hidden = true; wmCanvas.hidden = true;
   }
   function hideFallback() {
+    if (!camFailed && fallback.hidden) return;
     camFailed = false; fallback.hidden = true; video.hidden = false; ratioBtn.hidden = false;
     wmKeyNow = ''; drawWm();
   }
+  const failDoor = err => door.fail(camErrorText(err), {
+    retry: err?.code !== 'insecure' && err?.code !== 'nocamera',
+    alt: { label: '카메라 앱으로 찍기', onClick: () => shootSystem() },
+  });
 
-  async function openCam(userRetry = false) {
+  // 카메라 열기 — 문의 [카메라 열기]·셔터·크게 보기에서 돌아옴(camOn)일 때만. 들어오는 것만으로는 켜지 않는다
+  async function openCam() {
     if (dead || document.hidden) return;
-    const s = safe(() => store.settings(), {});
-    if (s.captureMode === 'syscam' && !userRetry) {
-      showFallback('휴대폰 카메라 앱으로 찍도록 설정돼 있어요.');
-      startGps();
-      return;
-    }
+    if (syscamMode) { showFallback('휴대폰 카메라 앱으로 찍도록 설정돼 있어요.'); return; }
     if (camOpen || opening) return opening;
+    if (door.state() === 'closed') door.opening();
+    const gen = ++camGen;
     opening = (async () => {
       try {
         camCaps = await camera.open(video);
         if (dead) { safe(() => camera.close()); return; }
+        const ds = door.state();
+        if (gen !== camGen || (ds !== 'opening' && ds !== 'open')) { safe(() => camera.close()); return; }   // 여는 사이 백그라운드·닫힘
         camOpen = true; hideFallback();
         torchBtn.hidden = !camCaps?.torch;
+        if (video.readyState >= 2) door.ready();                             // playing 이 먼저 지나갔으면(붙잡아 둔 카메라를 이어 쓸 때)
       } catch (err) {
         console.warn('카메라를 열지 못했어요', err);
         camOpen = false;
-        if (!dead) showFallback(camErrorText(err), { retry: err?.code !== 'insecure' && err?.code !== 'nocamera' });
+        if (!dead && gen === camGen && !document.hidden) failDoor(err);
       } finally {
-        opening = null;
-        startGps();                                                          // 권한 요청이 겹치지 않게 카메라 다음에 위치
+        if (gen === camGen) opening = null;
       }
     })();
     return opening;
   }
-  // 백그라운드 전환·트랙 끊김은 camera.js 가 스스로 닫고 다시 연다(review-notes 8) — 여기선 상태만 받아 그린다
+  // 쓰는 중의 끊김·백그라운드는 camera.js 가 알려 준다 — 문을 닫고(돌아와도 자동으로 열지 않는다) 실패면 이유
   const offCam = fn(camera, 'onState') ? camera.onState((st, err) => {
     if (dead) return;
-    if (st === 'open') { camOpen = true; if (camFailed) hideFallback(); }
-    else if (st === 'paused' || st === 'closed') camOpen = false;
-    else if (st === 'error') { camOpen = false; showFallback(camErrorText(err), { retry: true }); }
+    if (st === 'open') { if (!syscamMode) camOpen = true; }
+    else if (st === 'paused') { if (door.state() !== 'closed') { closeCam(); door.close({ animate: false }); } }
+    else if (st === 'closed') camOpen = false;
+    else if (st === 'error') { camOpen = false; if (door.state() !== 'closed' && !document.hidden) failDoor(err); }
   }) : null;
   if (offCam) cleanups.push(offCam);
-  function closeCam() { safe(() => camera.close()); camOpen = false; }
+  function closeCam() { camGen++; opening = null; safe(() => camera.close()); camOpen = false; }
 
   let gpsStop = null;
   function startGps() { if (!gpsStop && !dead) gpsStop = safe(() => gps.start(), null); }
@@ -521,7 +589,11 @@ function mount(root, params = {}, nav = {}) {
   // 그때부터 다음 셔터를 받는다(연타가 막히지 않음). 원본이 디스크에 들어가고 처리되는 것은 그 뒤에서(pipeline 줄)
   async function shoot() {
     if (leaving || dead) return;
-    if (camFailed || !camOpen) { if (camFailed) return shootSystem(); dom.toast?.('카메라를 여는 중이에요'); return; }
+    if (camFailed) return shootSystem();                                     // 휴대폰 카메라 앱 모드(cam-fallback)
+    if (!camOpen || door.state() !== 'open') {                               // 문이 닫혀 있으면 셔터 = [카메라 열기](실패 뒤엔 [다시 열기])
+      if (door.state() === 'closed') door.press(); else dom.toast?.('카메라 켜는 중이에요');
+      return;
+    }
     flash();
     safe(() => native.markBusy?.());                                          // 갤러리 원본·미러 쓰기를 2초 미룬다(브리지가 다음 셔터·글을 막지 않게)
     if (grabbing) return;                                                    // 같은 순간(프레임을 잡는 몇 ms)의 두 번째 탭 — 눌린 표시만
@@ -615,7 +687,7 @@ function mount(root, params = {}, nav = {}) {
     loc = text; freshHint = false; params.freshHint = false;
     paintLoc(); drawWm();                                                    // 확인을 누르면 바로 보인다 — 저장(아래)은 뒤에서
     try {
-      if (live(recId)) await store.updateRecord(recId, { location: text }, Date.now());
+      if (live(recId)) { await store.updateRecord(recId, { location: text }, Date.now()); syncPinNames(recId, text); }
       else params.draftLoc = text;
       if (!continuing) await store.setLastLocation(text, Date.now());       // 이어 찍기(옛 묶음)에서는 이어받기 값을 바꾸지 않는다
       if (!continuing) await store.setMeta('lastShotAt', Date.now());       // 위치를 확인했으니 10분 강조를 끈다
@@ -643,20 +715,21 @@ function mount(root, params = {}, nav = {}) {
     if (continuing) { leave(); return; }
     if (!rec || n === 0) { dom.toast?.('사진을 한 장 이상 찍어 주세요'); return; }
     const prev = rec.id;
+    cancelPlace();
     recId = null; createdHere = false;
     params.current = null; params.createdHere = false; params.draftLoc = undefined; params.draftContent = undefined;
     loc = safe(() => store.lastLocation(), '') || rec.location || '';
     content = '';
     freshHint = true; params.freshHint = true;
     thumbCache.clear();
-    paintAll(); drawWm();
+    paintAll(); drawWm(); refreshView();                                     // 새 묶음은 핀 없음 — 도면은 그대로라 다음 자리도 1~2탭
     const undo = () => {                                                     // 잘못 눌렀으면 직전 묶음으로 돌아가 이어 찍기
       if (dead || live(recId)) return;
       const r = live(prev);
       if (!r) return;
       recId = prev; params.current = prev; createdHere = true; params.createdHere = true;
       loc = r.location; content = r.content; freshHint = false; params.freshHint = false;
-      paintAll(); drawWm();
+      paintAll(); drawWm(); refreshView();
     };
     liftSnackOverDoc();
     if (typeof dom.snackbar === 'function') hideSnack = dom.snackbar('저장했어요. 다음 묶음', { actionLabel: '되돌리기', onAction: undo });
@@ -683,122 +756,415 @@ function mount(root, params = {}, nav = {}) {
     nav.back ? nav.back() : history.back();
   }
 
-  // ---------- 도면 띄우고 촬영(§10.6) ----------
+  // 잠깐 다른 화면(크게 보기·지도·전체 화면) — 돌아오면 같은 params 로 다시 mount 된다. 카메라는 붙잡아 두고 문을 바로 연다
+  function goSub(name, p = {}) {
+    if (dead || leaving || typeof nav.go !== 'function') return;
+    subNav = true;
+    params.camOn = camOpen && !camFailed;
+    try { nav.go(name, p); } catch (err) { subNav = false; params.camOn = false; console.warn('화면을 열지 못했어요', name, err); }
+  }
+
+  // ---------- 자료·도면 띄우고 촬영(§10.6, 도면보관함 §5.6) ----------
   function setLayout(mode) {
-    layoutMode = docId ? mode : 'cam';
+    layoutMode = shown() ? mode : 'cam';
     screen.dataset.layout = layoutMode;
     if (layoutMode === 'doc') { vf.setAttribute('data-testid', 'cap-cam-mini'); docWrap.removeAttribute('data-testid'); }
-    else { vf.removeAttribute('data-testid'); if (docId) docWrap.setAttribute('data-testid', 'cap-doc-mini'); else docWrap.removeAttribute('data-testid'); }
-    frame?.setInteractive?.(layoutMode === 'doc');
+    else { vf.removeAttribute('data-testid'); if (shown()) docWrap.setAttribute('data-testid', 'cap-doc-mini'); else docWrap.removeAttribute('data-testid'); }
+    frame?.setInteractive?.(layoutMode === 'doc' && !!docId);
+    dwgTap.hidden = !dwgId || layoutMode === 'doc';                          // 작은 창은 탭 = 크게(도면 손짓 대신)
+    if (dwgId) buildView();                                                  // 작은 창 = compact(손짓·나침반 없음), 크게 = 손짓·[여기에 찍기]
     stageWrap.style.removeProperty('--want');
     lastBoxKey = '';
     fit();
     requestAnimationFrame(fit);
+    if (view) setTimeout(() => {                                             // 크기가 정해진 뒤 한 번 더 — 강조 핀·찍기가 없으면 새 크기에 맞춘다(작은 창에서 점처럼 보이지 않게)
+      if (dead || !view) return;
+      safe(() => view.refresh?.());
+      if (!placing && !(myPin()?.drawingId === dwgId)) safe(() => view.engine?.()?.fit?.({ animate: false }));
+    }, 180);
   }
   function toggleLayout() {
-    if (!docId) return;
+    if (!shown()) return;
     const m = layoutMode === 'cam' ? 'doc' : 'cam';
+    if (placing && m === 'cam') cancelPlace();
     setLayout(m);
     store.setMeta('captureLayout', m)?.catch?.(() => {});
   }
+  function paintChip() {
+    docChip.hidden = !shown();
+    if (dwgId) {
+      const d = safe(() => dwgMod?.drawing?.(dwgId), null);
+      const pages = d?.pages?.length || 1;
+      docName.textContent = `${baseName(d?.name) || '도면'}${pages > 1 ? ` · ${dwgPage}쪽` : ''}`;   // 도면보관함 목록과 같게 확장자 없이
+      docIcon.replaceChildren(ic('drawing'));
+      screen.dataset.shown = 'dwg';
+    } else if (docId) {
+      docName.textContent = docOf(docId)?.name || '자료';
+      docIcon.replaceChildren(ic('doc'));
+      screen.dataset.shown = 'doc';
+    } else delete screen.dataset.shown;
+  }
 
   function docOf(id) { const d = id && safe(() => docsMod?.doc?.(id), null); return d && !d.deletedAt ? d : null; }
+  function dwgOf(id) { const d = id && safe(() => dwgMod?.drawing?.(id), null); return d && !d.deletedAt ? d : null; }
 
-  async function setDoc(id) {
+  function closeShown() {
+    if (dwgId) setDrawing(null); else setDoc(null);
+  }
+
+  // 자료(자료함) — 뷰어 iframe(docFrame). 도면이 떠 있었으면 내린다
+  async function setDoc(id, layout = null) {
     if (dead) return;
     if (!id) {
-      docId = null; frame?.close?.(); docWrap.hidden = true; docChip.hidden = true; layoutBtn.hidden = true;
+      docId = null; frame?.close?.(); if (frame) frame.el.hidden = true;
       store.setMeta('captureDoc', null)?.catch?.(() => {});
-      setLayout('cam'); paintSuggest();
+      if (!dwgId) { docWrap.hidden = true; setLayout('cam'); }
+      paintChip(); paintSuggest(true);
       return;
     }
     const d = docOf(id);
     if (!d) { dom.toast?.('자료를 찾을 수 없어요'); return; }
+    if (dwgId) dropDrawing();
+    store.setMeta('captureDrawing', null)?.catch?.(() => {});
     if (!frame) {
       const mod = await imp('../widgets/docframe.js');
-      if (!fn(mod, 'docFrame') || dead) { dom.toast?.('도면을 띄우지 못했어요'); return; }
+      if (!fn(mod, 'docFrame') || dead) { dom.toast?.('자료를 띄우지 못했어요'); return; }
       frame = mod.docFrame({ onState: () => {}, hint: false });                 // 안내 띠는 자료함·자료 보기에서만(작은 창을 가리지 않게)
-      docWrap.append(frame.el);                                              // iframe 은 여기 한 번만 붙이고 옮기지 않는다(배치는 CSS 로만)
+      docWrap.prepend(frame.el);                                             // iframe 은 여기 한 번만 붙이고 옮기지 않는다(배치는 CSS 로만)
       frame.onTap?.(() => { if (layoutMode === 'cam') toggleLayout(); });
     }
+    frame.el.hidden = false;
     docId = d.id;
-    docWrap.hidden = false; docChip.hidden = false; layoutBtn.hidden = false; suggest.hidden = true;
-    docName.textContent = d.name;
+    docWrap.hidden = false; setSugHidden(true);
+    paintChip();
     store.setMeta('captureDoc', d.id)?.catch?.(() => {});
-    setLayout(layoutMode);
+    setLayout(layout ?? restoreLayout ?? layoutMode); restoreLayout = null;
     try { await frame.open(d.id); docsMod?.markOpened?.(d.id, Date.now())?.catch?.(() => {}); }
-    catch (err) { console.warn('도면 열기 실패', err); dom.toast?.('도면을 열지 못했어요'); }
+    catch (err) { console.warn('자료 열기 실패', err); dom.toast?.('자료를 열지 못했어요'); }
   }
 
-  function chooseDoc() {
-    if (!docsMod) return;
-    const input = el('input', { type: 'text', enterkeyhint: 'search', class: 'input cap-docs-q', placeholder: '이름·태그로 찾기', autocomplete: 'off', spellcheck: 'false' });
-    const list = el('div', { class: 'cap-docs-list' });
-    let closeSheet = () => {};
-    const paint = () => {
-      const q = input.value.trim();
-      let items;
-      if (q) items = safe(() => docsMod.searchDocs(q), []).map(d => ({ d, sub: d.ext?.toUpperCase() || '' }));
-      else {
-        const seen = new Set(), out = [];
-        const pos = safe(() => gps.snapshot().pos, null);
-        const push = (d, sub) => { if (d && !d.deletedAt && !seen.has(d.id)) { seen.add(d.id); out.push({ d, sub }); } };
-        if (pos) for (const x of safe(() => docsMod.nearby(pos, { radius: 200 }), [])) push(x.doc, `지금 위치 근처 · ${Math.round(x.dist)}m`);
-        const all = safe(() => docsMod.docs(), []);
-        for (const d of all) if (d.pinned) push(d, '고정');
-        for (const d of all) push(d, d.ext?.toUpperCase() || '');
-        items = out;
+  // 도면(도면보관함) — 가벼운 타일 보기(drawingView). 자료가 떠 있었으면 내린다
+  async function loadDrawings() {
+    if (dwgMod) return dwgMod;
+    const m = await imp('../../data/drawings.js');
+    if (!fn(m, 'ready') || dead) return null;
+    try { await m.ready(); } catch (err) { console.warn('도면보관함을 못 열었어요', err); return null; }
+    if (dead) return null;
+    dwgMod = m;
+    const offW = fn(m, 'onDrawings') ? m.onDrawings(() => {
+      if (dead) return;
+      if (dwgId && !dwgOf(dwgId)) setDrawing(null);
+      else { paintPinBtn(); paintChip(); }
+      if (!dwgId) paintSuggest(true);
+    }) : null;
+    if (offW) cleanups.push(offW);
+    return m;
+  }
+  function dropDrawing() {                                                   // 도면 보기만 내린다(meta·배치는 부르는 쪽)
+    cancelPlace();
+    hidePinSnack?.(); hidePinSnack = null;                                   // 「위치를 찍었어요 [옮기기]」 — 도면이 없으면 눌러도 할 일이 없다
+    safe(() => view?.destroy?.());
+    view = null; viewCompact = null; dwgId = null;
+    dwgBox.replaceChildren(); dwgBox.hidden = true; dwgTap.hidden = true;
+    paintPinBtn();
+  }
+  async function setDrawing(id, page) {
+    if (dead) return;
+    if (!id) {
+      dropDrawing();
+      store.setMeta('captureDrawing', null)?.catch?.(() => {});
+      if (!docId) { docWrap.hidden = true; setLayout('cam'); }
+      paintChip(); paintSuggest(true);
+      return;
+    }
+    const m = await loadDrawings();
+    if (!m || dead) { dom.toast?.('도면보관함을 열지 못했어요'); return; }
+    const d = dwgOf(id);
+    if (!d) { dom.toast?.('도면을 찾을 수 없어요'); return; }
+    if (!dvMod) dvMod = await imp('../widgets/drawingview.js');
+    if (dead) return;
+    if (!fn(dvMod, 'drawingView')) { dom.toast?.('도면을 띄우지 못했어요'); return; }
+    const pg = Number(page) || (d.pages?.some(p => p.page === dwgPage) && dwgId === id ? dwgPage : (d.pages?.[0]?.page || 1));
+    if (docId) { docId = null; frame?.close?.(); if (frame) frame.el.hidden = true; store.setMeta('captureDoc', null)?.catch?.(() => {}); }
+    if (view && dwgId === id && dwgPage === pg) { paintChip(); setLayout(restoreLayout ?? layoutMode); restoreLayout = null; return; }
+    cancelPlace();
+    safe(() => view?.destroy?.()); view = null;
+    dwgId = d.id; dwgPage = pg;
+    if (!buildView(restoreLayout ?? layoutMode)) { dwgId = null; dom.toast?.('도면을 띄우지 못했어요'); return; }
+    dwgBox.hidden = false;
+    docWrap.hidden = false; setSugHidden(true);
+    paintChip(); paintPinBtn();
+    store.setMeta('captureDrawing', { id: d.id, page: pg })?.catch?.(() => {});
+    setLayout(restoreLayout ?? layoutMode); restoreLayout = null;
+    m.markOpened?.(d.id, Date.now())?.catch?.(() => {});
+  }
+  // 도면 보기 만들기 — 배치마다 compact 가 달라(작은 창: 손짓·나침반 없음 / 크게: 손짓·[여기에 찍기]) 바뀔 때만 다시 만든다(타일은 캐시라 가볍다).
+  // 내 위치·보는 방향(gps·나침반 센서)은 위치 맞춘 도면을 「크게」 볼 때만 — 작은 창에서 센서가 셔터·글 입력과 다투지 않게
+  function buildView(mode = layoutMode) {
+    if (!dwgId || !fn(dvMod, 'drawingView')) return false;
+    const compact = mode !== 'doc';
+    if (view && viewCompact === compact) return true;
+    safe(() => view?.destroy?.());
+    const mine = myPin();
+    try {
+      view = dvMod.drawingView({
+        drawingId: dwgId, page: dwgPage, mode: 'view',
+        me: !compact && !!safe(() => dwgMod?.transformOf?.(dwgId), null),
+        highlight: mine && mine.drawingId === dwgId ? mine.id : null,
+        showPins: 'all', compact,
+        onPlace: (x, y) => { if (placing) commitPin(x, y); },
+        onTapPin: pinId => onTapPin(pinId),
+      });
+    } catch (err) { console.warn('도면 보기 실패', err); view = null; viewCompact = null; return false; }
+    viewCompact = compact;
+    dwgBox.replaceChildren(view.el);
+    return true;
+  }
+  // 이 묶음 핀을 진하게(묶음이 바뀌거나 핀을 찍은 뒤)
+  function refreshView() {
+    if (!view) return;
+    const mine = myPin();
+    const hl = mine && mine.drawingId === dwgId ? mine.id : null;
+    if (fn(view, 'setHighlight')) safe(() => view.setHighlight(hl)); else safe(() => view.refresh?.());
+  }
+
+  // [자료] — 자료함 고르기 시트(docpicker). 고르면 '도면 크게' 자리에 — 보면서 바로 찍기
+  let picking = false;
+  async function chooseDoc() {
+    if (picking || dead) return;
+    picking = true;
+    try {
+      const [pm] = await Promise.all([imp('../widgets/docpicker.js'), docsReady]);
+      if (dead) return;
+      if (!fn(pm, 'pickDoc') || !docsMod) { dom.toast?.('자료함을 열지 못했어요'); return; }
+      const id = await resting_(pm.pickDoc({ title: docId ? '다른 자료 열기' : '자료 열기', current: docId }));
+      if (!id || dead) return;
+      restoreLayout = null;
+      store.setMeta('captureLayout', 'doc')?.catch?.(() => {});
+      if (id !== docId) await setDoc(id, 'doc'); else setLayout('doc');
+    } finally { picking = false; }
+  }
+  // [도면] — 도면보관함 고르기 시트(drawpicker). 처음엔 작은 창(카메라 크게) — 지금 배치 그대로
+  async function chooseDrawing() {
+    if (picking || dead) return;
+    picking = true;
+    try {
+      const [pm] = await Promise.all([imp('../widgets/drawpicker.js'), loadDrawings()]);
+      if (dead) return;
+      if (!fn(pm, 'pickDrawing')) { dom.toast?.('도면보관함을 열지 못했어요'); return; }
+      const id = await resting_(pm.pickDrawing({ title: dwgId ? '다른 도면 열기' : '도면 열기', current: dwgId }));
+      if (!id || dead) return;
+      restoreLayout = null;
+      await setDrawing(id);
+    } finally { picking = false; }
+  }
+  // 전체 화면 — 자료: docview, 도면: drawview(그 묶음 핀). 촬영 상태는 params·meta 가 들고 있어 돌아오면 그대로
+  function openFull() {
+    if (dwgId) { const p = myPin(); goSub('drawview', { id: dwgId, page: dwgPage, pinId: p && p.drawingId === dwgId ? p.id : null, from: 'capture' }); }
+    else if (docId) goSub('docview', { id: docId, from: 'capture' });
+  }
+
+  // ---------- 도면에 위치 찍기(이름 핀) ----------
+  // 이 묶음의 핀: record.pin({ drawingId, pinId }) → 없으면 drawings.pinsOfRecord(첫 핀)
+  function myPin() {
+    const r = live(recId);
+    if (!r || !dwgMod) return null;
+    const ref = r.pin && typeof r.pin === 'object' ? r.pin : null;
+    const p = ref?.pinId ? safe(() => dwgMod.pin(ref.pinId), null) : null;
+    if (p && !p.deletedAt && dwgOf(p.drawingId)) return p;
+    return safe(() => dwgMod.pinsOfRecord?.(r.id), [])?.[0] || null;
+  }
+  function paintPinBtn() {
+    const on = !!dwgId && !!view;
+    pinBtn.hidden = !on;
+    screen.dataset.pin = on ? '1' : '0';
+    screen.dataset.placing = placing ? '1' : '0';                            // 찍는 중엔 카메라 작은 창을 위로(도면의 [취소]·[여기에 찍기]를 가리지 않게)
+    placeOk.hidden = !placing;
+    countText.hidden = !!placing;
+    if (placing) placeOk.textContent = placing.pinId ? '여기로 옮기기' : '여기에 찍기';
+    if (!on) return;
+    if (placing) { pinLab.textContent = '찍기 취소'; pinBtn.classList.add('is-cancel'); pinBtn.setAttribute('aria-label', '위치 찍기 취소'); return; }
+    pinBtn.classList.remove('is-cancel');
+    const p = myPin();
+    const here = p && p.drawingId === dwgId;
+    pinLab.textContent = here ? `핀 ${p.no ?? ''} 옮기기` : '위치 찍기';
+    pinBtn.setAttribute('aria-label', here ? `이 묶음 핀(${pinLabel(p)}) 옮기기` : '도면에 이 묶음 위치 찍기');
+  }
+  function onPinBtn() { if (placing) cancelPlace(true); else startPin(); }
+
+  let pinBusy = false;
+  // 위치 맞춘 도면 + GPS 가 괜찮으면 내 위치에 바로(1탭), 아니면 도면 크게 + 찍기 모드(탭/조준점) → onPlace
+  async function startPin() {
+    if (pinBusy || dead || !dwgId || !view) return;
+    pinBusy = true;
+    try {
+      try { await ensureRecord(); }                                          // 묶음 먼저(§4.5 — 핀이 가리킬 묶음이 저장돼 있어야)
+      catch (err) { console.error(err); dom.toast?.('묶음을 만들지 못했어요'); return; }
+      if (dead || !dwgId) return;
+      const p = myPin();
+      if (p && p.drawingId === dwgId) { enterPlace(p.id); return; }          // 이미 이 도면에 있으면 옮기기
+      const q = await quickXY();
+      if (q) { await commitPin(q.x, q.y, { quick: true }); return; }
+      enterPlace(null);
+    } finally { pinBusy = false; }
+  }
+  async function quickXY() {
+    if (!georef) georef = await imp('../../core/georef.js');
+    const T = safe(() => dwgMod?.transformOf?.(dwgId), null);
+    const d = dwgOf(dwgId);
+    if (!T || !d || !fn(georef, 'toXY') || (d.geo && d.geo.page !== dwgPage)) return null;
+    const pos = safe(() => gps.snapshot().pos, null);
+    if (!pos || !(pos.acc <= QUICK_PIN_ACC) || !(Date.now() - (pos.at || 0) <= QUICK_PIN_AGE)) return null;
+    const q = safe(() => georef.toXY(T, pos.lat, pos.lng), null);
+    const pg = d.pages?.find(x => x.page === dwgPage);
+    if (!q || !Number.isFinite(q.x) || !Number.isFinite(q.y) || !pg?.w) return null;
+    if (q.x < 0 || q.y < 0 || q.x > pg.w || q.y > pg.h) return null;        // 도면 밖이면 직접 찍기로
+    return q;
+  }
+  let hidePinSnack = null;                                                   // 「위치를 찍었어요 [옮기기]」 스낵바(찍기 모드에 들어가면 닫는다 — [되돌리기]는 그대로)
+  function enterPlace(pinId) {
+    hidePinSnack?.(); hidePinSnack = null;
+    placing = { pinId, prevLayout: layoutMode };
+    if (layoutMode !== 'doc') setLayout('doc');                              // 크게 + 손짓(다시 만든 보기)
+    const p = pinId ? safe(() => dwgMod?.pin?.(pinId), null) : null;
+    safe(() => view?.setMode?.('place', p ? { label: '여기로', at: { x: p.x, y: p.y } } : { label: '여기에 찍기' }));
+    paintPinBtn();
+  }
+  function cancelPlace(restore = false) {
+    if (!placing) return;
+    const prev = placing.prevLayout;
+    placing = null;
+    safe(() => view?.setMode?.('view'));
+    if (restore && prev && prev !== layoutMode && !dead) setLayout(prev);
+    if (!dead) paintPinBtn();
+  }
+  // 핀 저장 — 같은 도면에 이미 있으면 옮기기(updatePin), 없으면 새 핀(이름 = 묶음 위치 글, 비우면 「핀 n」) + 묶음에 연결
+  async function commitPin(x, y, { quick = false } = {}) {
+    if (dead || !dwgId || !dwgMod) return;
+    const wasPlacing = placing;
+    if (placing) cancelPlace(true);
+    let rec;
+    try { rec = await ensureRecord(); } catch (err) { console.error(err); dom.toast?.('묶음을 만들지 못했어요'); return; }
+    const drawingId = dwgId, page = dwgPage;
+    try {
+      const cur = myPin();
+      let p;
+      if (cur && cur.drawingId === drawingId) {
+        p = await dwgMod.updatePin(cur.id, { x, y, page }, Date.now());
+        if (!rec.pin || rec.pin.pinId !== cur.id) await linkPin(rec.id, drawingId, cur.id);
+        dom.toast?.(`옮겼어요 · ${pinLabel(p || cur)}`);
+      } else {
+        if (cur) safe(() => dwgMod.deletePin?.(cur.id, Date.now())?.catch?.(() => {}));   // 다른 도면에 있던 이 묶음 핀은 휴지통으로(묶음 핀은 하나)
+        p = await dwgMod.addPin({ drawingId, page, x, y, recordId: rec.id, recordLabel: (loc || '').trim(), now: Date.now() });
+        await linkPin(rec.id, drawingId, p.id);
+        const label = pinLabel(p);
+        if (typeof dom.snackbar === 'function') {
+          liftSnackOverDoc();
+          hidePinSnack = dom.snackbar(`위치를 찍었어요 · ${label}`, { actionLabel: '옮기기', onAction: () => { if (!dead && dwgId === drawingId) enterPlace(p.id); } });
+        } else dom.toast?.(`위치를 찍었어요 · ${label}`);
       }
-      list.replaceChildren(...(items.length ? items.slice(0, 40).map(({ d, sub }) =>
-        el('button', { type: 'button', class: `cap-docs-row${d.id === docId ? ' on' : ''}`, onclick: () => { closeSheet(); setDoc(d.id); } },
-          ic('doc'), el('span', { class: 'cap-docs-name' }, d.name), el('small', {}, sub)))
-        : [el('p', { class: 'note' }, q ? '찾는 자료가 없어요' : '자료함에 올린 자료가 없어요')]));
-    };
-    let qRaf = 0;
-    input.addEventListener('input', () => { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; paint(); }); });   // 한 그림에 한 번
-    paint();
-    let restDone = false;
-    const unrest = () => { if (restDone) return; restDone = true; restN = Math.max(0, restN - 1); typingOn = false; setRest(); };
-    closeSheet = dom.openSheet(close => el('div', { class: 'cap-docs-sheet' },
-      el('h2', { class: 'sheet-title' }, '띄울 자료'), input, list,
-      el('button', { type: 'button', class: 'secondary', onclick: () => close() }, '닫기')), { onClose: unrest }) || closeSheet;
-    restN++; setRest();
+      if (dead) return;
+      refreshView();
+      if (viewCompact === false) safe(() => view?.focusPin?.(p.id));
+    } catch (err) {
+      console.error('핀 저장 실패', err);
+      dom.toast?.('위치를 저장하지 못했어요');
+      if (wasPlacing && !quick && !dead) enterPlace(wasPlacing.pinId);
+    } finally { if (!dead) paintPinBtn(); }
+  }
+  async function linkPin(recordId, drawingId, pinId) {
+    try { await store.updateRecord(recordId, { pin: { drawingId, pinId } }, Date.now()); }
+    catch (err) { console.warn('묶음에 핀 연결 실패(핀은 도면보관함에 저장됨)', err); }
+  }
+  function onTapPin(pinId) {
+    if (placing || dead) return;
+    const p = safe(() => dwgMod?.pin?.(pinId), null);
+    if (!p) return;
+    const mine = myPin();
+    if (mine && mine.id === p.id) { enterPlace(p.id); return; }              // 이 묶음 핀을 누르면 옮기기
+    dom.toast?.(pinLabel(p));
+  }
+  // 핀 표지 — 「3 101동 3층 욕실」, 기본 이름이면 「핀 3」만(번호가 두 번 나오지 않게)
+  function pinLabel(p) {
+    if (!p) return '핀';
+    const name = String(p.name || '').trim();
+    if (!name || name === `핀 ${p.no}`) return `핀 ${p.no ?? ''}`.trim();
+    return p.no != null ? `${p.no} ${name}` : name;
+  }
+  // 위치 글이 바뀌면 기본 이름 핀이 따라간다(직접 고친 이름은 그대로)
+  async function syncPinNames(recordId, text) {
+    const r = live(recordId);
+    if (!r) return;
+    if (!dwgMod && !r.pin) return;                                           // 도면을 안 쓰는 묶음이면 도면 DB 를 열지 않는다
+    const m = await loadDrawings();
+    if (!fn(m, 'syncRecordPinNames')) return;
+    try { const n = await m.syncRecordPinNames(recordId, text, Date.now()); if (n && !dead) { refreshView(); paintPinBtn(); } }
+    catch (err) { console.warn('핀 이름 따라가기 실패', err); }
   }
 
-  let sugT = 0, sugStale = false;
-  function paintSuggest() {
+  // ---------- 근처 도면·자료 제안 ----------
+  // 지금 이 도면 안(위치 맞춘 도면, drawingsAt) → 근처 자료(자료함 anchor). 20m 넘게 움직였을 때만 다시 찾는다(감사 #14)
+  let sugT = 0, sugStale = false, sugAt = null, lastSugHidden = true;
+  function paintSuggest(force = false) {
     if (dead) return;
     if (resting) { sugStale = true; return; }
-    if (docId || !docsMod) { suggest.hidden = true; return; }
+    if (shown()) { setSugHidden(true); return; }
     const pos = safe(() => gps.snapshot().pos, null);
-    const near = pos ? safe(() => docsMod.nearby(pos, { radius: 200 }), []) : [];
-    const first = near[0]?.doc;
-    sugId = first?.id || null;
-    // 근처 자료가 없어도 자료함에 자료가 있으면 「도면 띄우기 [고르기]」로(위치를 연결하지 않은 도면도 촬영 중에 띄울 수 있게)
-    const any = !first && safe(() => docsMod.docs().some(d => !d.deletedAt), false);
-    suggest.hidden = !first && !any;
-    sugLab.textContent = first ? '근처 도면' : '도면 띄우기';
-    sugName.textContent = first ? first.name : '';
-    sugAct.textContent = first ? '띄우기' : '고르기';
-    if (suggest.hidden !== lastSugHidden) { lastSugHidden = suggest.hidden; fit(); }
+    if (!force && pos && sugAt && approxM(pos, sugAt) < 20) return;
+    sugAt = pos ? { lat: pos.lat, lng: pos.lng } : null;
+    sug = null;
+    if (pos && dwgMod) {
+      const at = safe(() => dwgMod.drawingsAt(pos, { marginM: 30 }), [])[0];
+      if (at?.drawing) sug = { kind: 'dwg', id: at.drawing.id, page: at.drawing.geo?.page, name: at.drawing.name, inside: at.outsideM === 0 };
+    }
+    if (!sug && pos && docsMod) {
+      const near = safe(() => docsMod.nearby(pos, { radius: 200 }), [])[0]?.doc;
+      if (near) sug = { kind: 'doc', id: near.id, name: near.name };
+    }
+    if (sug) {
+      sugLab.textContent = sug.kind === 'dwg' ? (sug.inside ? '지금 이 도면 안' : '근처 도면') : '근처 자료';
+      sugName.textContent = sug.kind === 'dwg' ? baseName(sug.name) : sug.name;   // 도면은 보관함 목록처럼 확장자 없이, 자료는 종류가 중요해 그대로
+    }
+    setSugHidden(!sug);
   }
-  let lastSugHidden = true;
+  function setSugHidden(h) {                                                // 셔터 위 줄에 겹친다 — 뷰파인더 배치(fit)는 그대로
+    suggest.hidden = h;
+    if (h !== lastSugHidden) { lastSugHidden = h; screen.dataset.sug = h ? '0' : '1'; }
+  }
 
+  // 자료함·도면보관함은 화면이 뜬 뒤에 연다(첫 그림을 늦추지 않게). 띄워 두었던 것을 되살린다
+  let docsReadyRes;
+  const docsReady = new Promise(r => { docsReadyRes = r; });
   async function initDocs() {
     const [dm, aw] = await Promise.all([imp('../../data/docs.js'), imp('../../platform/awake.js')]);
+    if (dead) { docsReadyRes(); return; }
+    holdAwake(aw);
+    if (fn(dm, 'docs')) {
+      try { dm.docs(); docsMod = dm; } catch { try { await dm.initDocs?.({ now: Date.now() }); docsMod = dm; } catch (err) { console.warn('자료함을 못 열었어요', err); } }
+    }
+    docsReadyRes();
     if (dead) return;
-    awake = aw;
-    safe(() => awake?.keepAwake?.(true));
-    if (!fn(dm, 'docs')) return;
-    try { dm.docs(); } catch { try { await dm.initDocs?.({ now: Date.now() }); } catch (err) { console.warn('자료함을 못 열었어요', err); return; } }
-    if (dead) return;
-    docsMod = dm;
-    const want = params.docId || safe(() => store.meta('captureDoc', null), null);
     const saved = safe(() => store.meta('captureLayout', 'cam'), 'cam');
-    layoutMode = saved === 'doc' ? 'doc' : 'cam';
-    if (want && docOf(want)) await setDoc(want);
-    else { layoutMode = 'cam'; paintSuggest(); }
-    const offD = fn(dm, 'onDocs') ? dm.onDocs(() => { if (docId && !docOf(docId)) setDoc(null); else paintSuggest(); }) : null;
+    restoreLayout = saved === 'doc' ? 'doc' : 'cam';
+    // 되살릴 것: params(자료 보기·도면 보기에서 [띄우고 촬영]) → meta. 도면이 먼저(params 에 둘 다 있으면 도면)
+    const wantDwg = params.drawingId ? { id: params.drawingId, page: params.page } : (params.docId ? null : safe(() => store.meta('captureDrawing', null), null));
+    const wantDoc = params.docId || (wantDwg ? null : safe(() => store.meta('captureDoc', null), null));
+    if (docsMod && wantDoc && docOf(wantDoc)) await setDoc(wantDoc);
+    else if (!wantDwg) restoreLayout = null;
+    if (dead) return;
+    // 도면 DB 는 띄울 도면이 있거나 이 묶음에 핀이 있을 때 바로, 아니면 한가할 때(근처 도면 제안용)
+    const needNow = !!wantDwg?.id || !!live(recId)?.pin;
+    const openDwg = async () => {
+      if (dead) return;
+      const m = await loadDrawings();
+      if (!m || dead) return;
+      if (wantDwg?.id && !docId && dwgOf(wantDwg.id)) await setDrawing(wantDwg.id, wantDwg.page);
+      else restoreLayout = null;
+      paintPinBtn(); paintSuggest(true);
+    };
+    if (needNow) await openDwg();
+    else { const t = setTimeout(openDwg, 1200); cleanups.push(() => clearTimeout(t)); paintSuggest(true); }
+    const offD = docsMod && fn(docsMod, 'onDocs') ? docsMod.onDocs(() => { if (docId && !docOf(docId)) setDoc(null); else paintSuggest(true); }) : null;
     if (offD) cleanups.push(offD);
   }
 
@@ -817,6 +1183,7 @@ function mount(root, params = {}, nav = {}) {
       if (!r || r.deletedAt) { recId = null; params.current = null; createdHere = false; }
       else { loc = r.location; content = r.content; }
       drawWm(); strip = true; text = true;
+      paintPinBtn();
     }
     if (!strip && recId && ch?.photos?.size) { for (const pid of ch.photos) if (store.photo(pid)?.recordId === recId) { strip = true; break; } }
     if (ch?.meta?.has?.('lastShotAt')) text = true;
@@ -827,35 +1194,60 @@ function mount(root, params = {}, nav = {}) {
   const offPend = fn(pipeline, 'onPending') ? safe(() => pipeline.onPending(paintPending), null) : null;
   if (offPend) cleanups.push(offPend);
   paintPending(safe(() => pipeline.pending?.() || 0, 0));
-  const offGps = safe(() => gps.on(() => { clearTimeout(sugT); sugT = setTimeout(paintSuggest, 400); }), null);
+  const offGps = safe(() => gps.on(() => { clearTimeout(sugT); sugT = setTimeout(() => paintSuggest(), 400); }), null);
   if (offGps) cleanups.push(offGps);
 
-  // 시작할 때 화면이 가려져 있었으면(카메라를 못 엶) 보이게 될 때 한 번 연다
-  const onVis = () => { if (!document.hidden && !camOpen && !camFailed && !dead) openCam(); };
+  // 백그라운드로 가면 카메라를 닫고 문도 닫는다 — 돌아와도 자동으로 열지 않는다([카메라 열기]를 다시). APK 는 camera.js 가 native.onPause 로 'paused' 를 알린다
+  const onVis = () => {
+    if (dead || !document.hidden || syscamMode) return;
+    if (door.state() !== 'closed' || camOpen || opening) { closeCam(); door.close({ animate: false }); }
+  };
   document.addEventListener('visibilitychange', onVis);
   cleanups.push(() => document.removeEventListener('visibilitychange', onVis));
 
   paintRatio(); paintAll();
   setOrient(readOrient());                                                   // 지금 방향(아래 선언이 다 끝난 뒤에)
   requestAnimationFrame(fit);
-  openCam();
+  if (syscamMode) { door.el.hidden = true; openCam(); }
+  else if (camOnAtMount && !document.hidden) { door.openNow(); openCam(); }   // 크게 보기·지도에서 돌아옴 — 붙잡아 둔 카메라를 바로 이어 쓴다(문 움직임 없이)
+  startGps();
   initDocs();
 
-  const ctl = { get leaving() { return leaving; }, leave };
+  // 안드로이드 뒤로 — 찍는 중이면 찍기 취소, 도면을 크게 보는 중이면 작게, 그 밖에는 화면을 떠난다(drawview 와 같은 순서)
+  const ctl = {
+    get leaving() { return leaving; }, leave,
+    back() {
+      if (placing) { cancelPlace(true); return; }
+      if (shown() && layoutMode === 'doc') { toggleLayout(); return; }
+      leave();
+    },
+  };
   active = ctl;
 
   return () => {
     dead = true;
     if (active === ctl) active = null;
-    closeCam();
-    gpsStop?.(); gpsStop = null;
+    // 크게 보기·지도로 잠깐 가면 카메라를 30초 붙잡는다(돌아오면 getUserMedia 다시 열기 없이 이어 씀). 그 밖엔 바로 닫는다
+    if (subNav && camOpen && !camFailed && fn(camera, 'release')) { camGen++; safe(() => camera.release({ keepMs: KEEP_CAM_MS })); camOpen = false; }
+    else closeCam();
+    const stopG = gpsStop; gpsStop = null;
+    if (stopG) setTimeout(() => safe(stopG), LATER_MS);                      // 금방 돌아오거나 다음 화면도 위치를 쓰면 watch 를 다시 걸지 않게
     gl?.destroy?.();
     clearTimeout(sugT);
+    safe(() => view?.destroy?.()); view = null;
     frame?.destroy?.();
-    safe(() => awake?.keepAwake?.(false));
+    dropAwakeLater();
     for (const f of cleanups) safe(f);
   };
 }
+
+// 두 위치 사이 대략 거리(m) — 제안 다시 찾기 판단용(짧은 거리)
+function approxM(a, b) {
+  const k = 111320, dy = (a.lat - b.lat) * k, dx = (a.lng - b.lng) * k * Math.cos(a.lat * Math.PI / 180);
+  return Math.hypot(dx, dy);
+}
+
+const baseName = n => String(n ?? '').replace(/\.[A-Za-z0-9]{2,5}$/, '');
 
 function safe(f, fallback) { try { const v = f(); return v === undefined ? fallback : v; } catch (err) { console.warn(err); return fallback; } }
 
@@ -864,7 +1256,7 @@ export default {
   mount,
   onBack() {                                                                 // 뒤로 = [뒤로] 버튼과 같은 정리(저장 기다림·빈 묶음 정리)
     if (!active || active.leaving) return false;
-    active.leave();
+    active.back();
     return true;
   },
 };

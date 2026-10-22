@@ -1,5 +1,7 @@
 // 수동 백업 ZIP 만들기·복원(SPEC §5.6·§4.5-5). 형식은 core/backup.js(makeBackupJson/parseBackupJson).
 // ZIP: backup.json + w/<사진ID>.jpg(작업본) + t/<사진ID>.jpg(썸네일). 휴지통 묶음·사진, 설정(키 제외), lastLocation 도 담는다.
+// 판 2(v0.1.4): backup.json 의 drawings = 도면보관함 핀·기준점·도면 메타(작음). 도면 원본 파일·타일은 자료함처럼 백업 밖 —
+//   복원하면 도면은 「원본 파일을 다시 올려 주세요」(missingFile)로 들어오고 핀 이름·묶음 연결·위치 맞춤은 그대로 산다.
 // 만들기: 흐름 쓰기(앱: CACHE/backup/<이름>.tmp → 크기 확인 → 이름 바꾸기, 웹: Blob 조각) — 사진은 한 장씩만 메모리에.
 // 읽기: File.slice 로 끝의 중앙 디렉터리부터, 항목은 필요할 때 하나씩(core/zip openZip — 원본 backupzip.js read/readEntry) — 수백 MB 도 통째로 올리지 않는다.
 import * as store from '../data/store.js';
@@ -13,14 +15,22 @@ import { deliverFile } from './exporter.js';
 const MAX_JSON = 64 * 1024 * 1024, MAX_FILE = 32 * 1024 * 1024;              // 항목 하나 상한 — 풀기 전에 걸러 메모리를 지킨다(원본 값)
 const tell = (cb, ...a) => { try { cb?.(...a); } catch (e) { console.error(e); } };
 const bytesOf = async b => (b ? new Uint8Array(await b.arrayBuffer()) : null);
+// 도면보관함(별도 DB) — 없거나 못 열면 조용히 빠진다(사진 백업은 그대로)
+async function drawingsMod() {
+  try { const dw = await import('../data/drawings.js'); if (typeof dw.ready === 'function') await dw.ready(); return dw; }
+  catch (e) { console.warn('도면보관함을 열지 못했어요', e); return null; }
+}
 
 // ---- 만들기 ---- → { name, size, blob? | uri?, path?, records, photos, skipped }
 let seq = 0;
 export async function makeBackup(onProgress, { now = Date.now() } = {}) {
   await store.flush?.();                                                     // 화면이 아직 저장 중인 것까지
+  const dw = await drawingsMod();
+  let drawings = null;
+  try { drawings = dw?.dumpDrawings ? dw.dumpDrawings() : null; } catch (e) { console.warn('도면보관함 백업 실패', e); }
   const snap = store.snapshot();                                             // 휴지통 포함 전부
   const json = makeBackupJson({
-    records: snap.records, photos: snap.photos, settings: snap.settings, now,
+    records: snap.records, photos: snap.photos, settings: snap.settings, now, drawings,
     appVersion: APP_VERSION, installId: snap.installId || store.meta('installId', ''), lastLocation: snap.lastLocation,
   });
   const todo = snap.photos.filter(p => p.state === 'ready');
@@ -42,7 +52,7 @@ export async function makeBackup(onProgress, { now = Date.now() } = {}) {
     }
     const { size } = await zip.finish();
     const out = await sink.finish(size);
-    return { name, size, ...out, at: now, records: json.records.length, photos, skipped };
+    return { name, size, ...out, at: now, records: json.records.length, photos, skipped, drawings: json.counts.drawings, pins: json.counts.pins };
   } catch (e) {
     await sink.abort().catch(() => {});
     throw e;
@@ -66,7 +76,8 @@ const unwrapper = names => {
 };
 const isZip = async file => { const h = new Uint8Array(await file.slice(0, 2).arrayBuffer()); return h[0] === 0x50 && h[1] === 0x4B; };
 
-// file: File|Blob(.zip 또는 backup.json) → { added, updated, skipped, photos, missing?, records, settingsFilled }
+// file: File|Blob(.zip 또는 backup.json) → { added, updated, skipped, photos, missing?, records, settingsFilled, drawings: { added, updated, skipped, missingFiles } | null }
+//   drawings.missingFiles = 원본 파일이 없는 도면 수(도면보관함에서 「원본 파일을 다시 올려 주세요」 — 화면 안내 근거)
 export async function restoreBackup(file, onProgress) {
   if (!file || !(file.size > 0)) throw new Error('빈 파일이에요');
   let parsed, getBlob = null;
@@ -99,7 +110,17 @@ export async function restoreBackup(file, onProgress) {
   for (const k of ['siteName', 'author']) if (!String(cur[k] || '').trim() && String(parsed.settings?.[k] || '').trim()) patch[k] = parsed.settings[k];
   if (Object.keys(patch).length) await store.setSettings(patch);
   if (!store.lastLocation() && parsed.lastLocation?.text) await store.setLastLocation(parsed.lastLocation.text, parsed.lastLocation.at || Date.now());
-  return { ...r, records: parsed.records.length, settingsFilled: Object.keys(patch) };
+  let drawings = null;
+  if (parsed.drawings) {
+    const dw = await drawingsMod();
+    if (dw?.mergeDrawings) {
+      try {
+        drawings = await dw.mergeDrawings(parsed.drawings);
+        drawings.missingFiles = (dw.drawings?.() ?? []).filter(d => d.missingFile).length;
+      } catch (e) { console.warn('도면보관함 복원 실패', e); drawings = { added: 0, updated: 0, skipped: 0, missingFiles: 0, error: e?.message || String(e) }; }
+    }
+  }
+  return { ...r, records: parsed.records.length, settingsFilled: Object.keys(patch), drawings };
 }
 
 // ---- 재설치 뒤 갤러리 원본으로 사진 되살리기(§4.5-6 다, 원본 restore.js rebuildFromGallery 방식) ----

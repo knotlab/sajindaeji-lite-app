@@ -236,9 +236,11 @@ export function zipSink(rel, mime = 'application/zip') {
 }
 
 // CACHE 의 내보내기·공유·백업 사본 정리 — app.js 가 첫 화면을 그린 뒤 부른다(공유 직후에는 받는 앱이 읽는 중일 수 있어 지우지 않는다)
-export async function cleanupCache(dirs = ['export', 'share', 'backup']) {
+// CACHE 뿌리를 한 번 readdir 해서 있는 것만 지운다(폴더마다 stat 하던 3번 → 1번, 속도 감사 #16). orig = 갤러리 원본 보내기 임시
+export async function cleanupCache(dirs = ['export', 'share', 'backup', 'orig']) {
   if (!isNative()) return;
-  for (const d of dirs) if (await fsStat(DIR.CACHE, d)) await fsRmdir(DIR.CACHE, d).catch(e => console.warn('임시 폴더를 지우지 못했어요', d, e));
+  const have = new Set((await fsList(DIR.CACHE, '')).map(f => f.name));
+  for (const d of dirs) if (have.has(d)) await fsRmdir(DIR.CACHE, d).catch(e => console.warn('임시 폴더를 지우지 못했어요', d, e));
 }
 
 // CACHE 파일(주소 또는 {path}) → 문서/현장사진대지 lite/<relPath>. 같은 이름이 있는데 못 덮으면 시각을 붙인다 → 실제 주소
@@ -301,19 +303,46 @@ export async function take({ photoId, prefer = 'sd' } = {}) {
   if (!r || r.cancelled || !r.path) throw Object.assign(new Error('촬영을 취소했어요'), { code: 'CANCEL' });
   return { path: r.path, savedTo: r.savedTo ?? null, name: r.name ?? null, uri: r.uri ?? null, sdMissed: !!r.sdMissed };
 }
+// 갤러리 원본 보내기 임시 파일 — CACHE/orig/<이름>. 512KB 조각마다 브리지 한 번(수 MB 한 덩어리가 브리지 줄을 100~300ms 막던 것, 속도 감사 #7),
+// 조각 사이에 입력(셔터·글)이 있으면 한가해질 때까지 쉰다. 끝에 크기를 확인한다(조각이 조용히 빠진 파일을 갤러리에 넣지 않게) → file:// 주소
+const ORIG_DIR = 'orig';
+async function writeOrigTemp(data, rel) {
+  const blob = data instanceof Blob ? data : new Blob([data instanceof ArrayBuffer ? new Uint8Array(data) : data]);
+  const size = blob.size;
+  if (!size) throw new Error('빈 사진이에요');
+  try {
+    for (let at = 0; at < size; at += CHUNK) {
+      if (at && !isQuiet(800)) await whenQuiet({ quietMs: 800, maxMs: 5000 });
+      const b64 = await toB64(blob.slice(at, Math.min(size, at + CHUNK)));
+      if (at === 0) await fsWrite(DIR.CACHE, rel, b64);
+      else await fsAppend(DIR.CACHE, rel, b64);
+    }
+    const st = await fsStat(DIR.CACHE, rel);
+    if (!st || (Number.isFinite(Number(st.size)) && Number(st.size) !== size)) throw new Error(`임시 원본 크기가 맞지 않아요(${st ? st.size : '없음'}/${size})`);
+  } catch (e) { await fsDelete(DIR.CACHE, rel).catch(() => {}); throw e; }
+  const root = fileBase.get(DIR.CACHE);
+  return root != null ? `${root}/${rel}` : fsUri(DIR.CACHE, rel);
+}
 // 앱 안 카메라 원본을 갤러리(DCIM/현장사진대지 lite)에 — SD 선호. 던지지 않는다 → { ok, savedTo, uri } | { ok:false, error }
-export async function saveOriginal({ bytes, path, name, prefer = 'sd' } = {}) {
+//   bytes(Blob|Uint8Array) → CACHE 임시 파일에 조각으로 쓰고 Shot.saveOriginal({ path }) — 네이티브가 파일을 복사한다(브리지에 큰 덩어리 없음).
+//   임시 파일 쓰기가 안 되면 예전 방식(base64 한 번). path 를 주면 그 파일 그대로. tempId: 임시 파일 이름(사진 id — 영문·숫자)
+export async function saveOriginal({ bytes, path, name, prefer = 'sd', tempId = null } = {}) {
   const S = plugin('Shot');
   if (!S) return { ok: false, error: '앱에서만 돼요', code: 'NO_PLUGIN' };
+  let temp = null;
   try {
     const opts = { name, prefer };
     if (path) opts.path = path;
-    else if (bytes) opts.data = await toB64(bytes);                        // Blob 도 받는다(워커가 만든 원본)
-    else return { ok: false, error: '저장할 사진이 없어요' };
+    else if (bytes) {
+      const rel = `${ORIG_DIR}/${String(tempId || Date.now().toString(36)).replace(/[^A-Za-z0-9_-]/g, '_')}.jpg`;
+      try { opts.path = await writeOrigTemp(bytes, rel); temp = rel; }
+      catch (e) { console.warn('갤러리 원본 임시 파일 실패 — 한 번에 보내요', e); opts.data = await toB64(bytes); }
+    } else return { ok: false, error: '저장할 사진이 없어요' };
     const r = await S.saveOriginal(opts);
     if (!r?.savedTo) return { ok: false, error: r?.error || '갤러리에 넣지 못했어요' };
     return { ok: true, savedTo: r.savedTo, uri: r.uri ?? null };
   } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  finally { if (temp) fsDelete(DIR.CACHE, temp).catch(() => {}); }
 }
 export async function findOriginals({ names = [] } = {}) {
   const S = plugin('Shot');
@@ -419,21 +448,30 @@ const listen = (name, fn) => {
   const h = Promise.resolve(A.addListener(name, fn)).catch(() => null);
   return () => { h.then(x => x?.remove?.()); };
 };
+// 수명주기 허브(속도 감사 #5①): 네이티브 리스너는 pause·resume 하나씩만 처음 한 번 붙이고(appStateChange 는 붙이지 않음 — pause/resume 과 겹친다),
+// 구독자는 JS Set 으로 나눠 준다. 예전에는 구독자마다 addListener 2개씩(부팅 8번, 촬영 화면 들어갈 때마다 4번 붙이고 4번 떼기)이었다
+const life = { pause: new Set(), resume: new Set() };
+let hubOn = false;
+function hub() {
+  if (hubOn || typeof document === 'undefined') return;
+  hubOn = true;
+  const all = (k, why) => { for (const f of [...life[k]]) f(why); };
+  document.addEventListener('visibilitychange', () => all(document.visibilityState === 'hidden' ? 'pause' : 'resume', document.visibilityState));
+  window.addEventListener('pagehide', () => all('pause', 'pagehide'));
+  listen('pause', () => all('pause', 'pause'));
+  listen('resume', () => all('resume', 'resume'));
+}
 export function onPause(cb) {
+  hub();
   const fire = settled(cb);
-  const vis = () => { if (document.visibilityState === 'hidden') fire('hidden'); };
-  const hide = () => fire('pagehide');
-  document.addEventListener('visibilitychange', vis);
-  window.addEventListener('pagehide', hide);
-  const offs = [listen('pause', () => fire('pause')), listen('appStateChange', s => { if (!s?.isActive) fire('inactive'); })];
-  return () => { document.removeEventListener('visibilitychange', vis); window.removeEventListener('pagehide', hide); offs.forEach(f => f()); };
+  life.pause.add(fire);
+  return () => { life.pause.delete(fire); };
 }
 export function onResume(cb) {
+  hub();
   const fire = settled(cb);
-  const vis = () => { if (document.visibilityState === 'visible') fire('visible'); };
-  document.addEventListener('visibilitychange', vis);
-  const offs = [listen('resume', () => fire('resume')), listen('appStateChange', s => { if (s?.isActive) fire('active'); })];
-  return () => { document.removeEventListener('visibilitychange', vis); offs.forEach(f => f()); };
+  life.resume.add(fire);
+  return () => { life.resume.delete(fire); };
 }
 export const onBack = cb => listen('backButton', cb);
 export const onRestored = cb => listen('appRestoredResult', cb);           // 카메라 앱을 띄운 사이 앱이 죽었다 살아났을 때

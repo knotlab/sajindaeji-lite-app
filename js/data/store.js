@@ -2,11 +2,13 @@
 // 원본 현장사진대지 store.js 방식: 쓰기는 한 줄로 세워 하나씩(읽기-수정-쓰기가 겹쳐 rev·사진 순서가 사라지지 않게),
 // 캐시는 IDB 트랜잭션이 끝난 뒤에만 바꾸고, 캐시 레코드는 얼린 새 객체로 갈아 끼운다. 알림은 같은 틱 변경을 한 번에 묶는다.
 // 사진은 §4.5(공시체 BUGREPORT): 셔터 결과 원본을 incoming 파일에 먼저 쓰고 메타(processing)+photoIds 를 같이 저장 → 작업본·썸네일 → ready → incoming 삭제.
+//   APK 갤러리 원본이 필요한 사진은 ready 뒤에도 incoming 을 남겼다가(finishPhoto keepIncoming) 갤러리에 넣은 뒤 releaseIncoming(속도 감사 #7 — 원본 사본 단계 없앰).
+// 도면 핀(v0.1.4): 핀은 도면보관함(data/drawings.js) 한 곳에만. 묶음에는 연결 표지 record.pin = { drawingId, pinId } | null 만.
 import * as self from './store.js';
 import * as db from './db.js';
 import * as fs from './photofs.js';
 import { uid, newRecord, newPhoto, touch, recordNo } from '../core/model.js';
-import { mergeRecord, mergePhoto } from '../core/backup.js';
+import { mergeRecord, mergePhoto, cleanRecordPin } from '../core/backup.js';
 import { TRASH_DAYS } from '../config.js';
 import { dayKey } from '../core/date.js';
 
@@ -16,13 +18,14 @@ export const DEFAULT_SETTINGS = Object.freeze({
   captureMode: 'incam', photoRatio: '4:3', saveToGallery: true, galleryPref: 'sd', vworldKey: '',
   captureHiRes: false,                                                         // 켜면 takePhoto(느림), 끄면 미리보기 프레임 즉시 잡기(§5.4)
 });
-const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 칸 — 번호·rev·사진 순서·휴지통은 전용 함수 몫
+const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 글 칸 — 번호·rev·사진 순서·휴지통은 전용 함수 몫
+export { cleanRecordPin };                                                   // 도면 핀 연결 모양 확인(core/backup.js)
 const PHOTO_FIXED = ['id', 'recordId', 'state', 'store', 'deletedAt', 'createdAt'];
 const PURGED_MAX = 2000;                                                     // 영구 삭제한 묶음 id 기억(복원 제안이 지운 것을 「잃어버린 것」으로 보지 않게)
 
 const cache = { records: new Map(), photos: new Map(), meta: new Map() };
 const photoIdx = new Map();                                                  // recordId → Set(photoId)
-const urls = new Map();                                                      // `${id}:${kind}` → objectURL (웹만, 캐시)
+const urls = new Map();                                                      // `${id}:${kind}` → 화면 주소 캐시(웹 objectURL, APK 예전 사진의 convertFileSrc 주소)
 const listeners = new Set();
 let ready = false, openP = null, writeTail = Promise.resolve();
 
@@ -46,6 +49,12 @@ function idxDel(rid, id) { const s = photoIdx.get(rid); if (s && s.delete(id) &&
 function setPhotoCache(p) { const old = cache.photos.get(p.id); if (old) idxDel(old.recordId, p.id); cache.photos.set(p.id, deepFreeze(p)); idxAdd(p.recordId, p.id); }
 function dropPhotoCache(id) { const old = cache.photos.get(id); if (old) idxDel(old.recordId, id); cache.photos.delete(id); }
 function freshId(prefix, map) { for (;;) { const id = uid(prefix); if (!map.has(id)) return id; } }   // 같은 id 로 put 하면 조용히 덮어쓴다 — 있으면 다시 뽑는다
+function dropUrl(key) {                                                      // objectURL 만 해제(파일 주소는 해제할 것이 없다)
+  const u = urls.get(key);
+  if (u === undefined) return;
+  urls.delete(key);
+  if (typeof u === 'string' && u.startsWith('blob:')) { try { URL.revokeObjectURL(u); } catch { /* 없음 */ } }
+}
 
 // ---- 알림(마이크로태스크 묶음) ----
 let pending = null;
@@ -102,8 +111,7 @@ export async function close() {
   ready = false; openP = null;
   for (const m of Object.values(cache)) m.clear();
   photoIdx.clear();
-  for (const u of urls.values()) try { URL.revokeObjectURL(u); } catch { /* 없음 */ }
-  urls.clear();
+  for (const k of [...urls.keys()]) dropUrl(k);
   db.closeDb();
 }
 
@@ -114,7 +122,7 @@ export const isReady = () => ready;
 // 휴지통 30일 — 묶음, 그리고 살아 있는 묶음의 개별 삭제 사진
 async function sweepTrash(now) {
   const limit = (Number.isFinite(TRASH_DAYS) ? TRASH_DAYS : 30) * DAY;
-  for (const r of [...cache.records.values()]) if (r.deletedAt && now - r.deletedAt >= limit) await purgeRecord(r.id);
+  for (const r of [...cache.records.values()]) if (r.deletedAt && now - r.deletedAt >= limit) await purgeRecord(r.id, { deferPins: true });   // 부팅에서 도면 DB 를 열지 않게
   for (const p of [...cache.photos.values()]) if (p.deletedAt && now - p.deletedAt >= limit && !cache.records.get(p.recordId)?.deletedAt) await purgePhoto(p.id);
 }
 
@@ -219,6 +227,7 @@ export function createRecord({ day, location = '', content = '', now = Date.now(
   });
 }
 
+// patch: { location?, content?, pin? } — pin 은 { drawingId, pinId } | null(도면보관함 핀 연결). 바뀐 게 없으면 rev 그대로
 export function updateRecord(id, patch = {}, now = Date.now()) {
   return serial(async () => {
     const cur = cache.records.get(id);
@@ -228,6 +237,11 @@ export function updateRecord(id, patch = {}, now = Date.now()) {
       if (patch[k] === undefined) continue;
       const v = String(patch[k] ?? '');
       if (v !== cur[k]) { if (next === cur) next = { ...cur }; next[k] = v; }
+    }
+    if (patch.pin !== undefined) {
+      const pin = cleanRecordPin(patch.pin);
+      if (pin === undefined) throw fail('BAD_PIN', '핀 연결 모양이 맞지 않아요');
+      if (!same(pin, cur.pin ?? null)) { if (next === cur) next = { ...cur }; next.pin = pin; }
     }
     if (next === cur) return cur;                                            // 바뀐 게 없으면 rev 를 올리지 않는다
     const rec = touch(next, now);
@@ -258,24 +272,49 @@ function rememberPurged(ids, rec) {
   return metas;
 }
 
-// 영구 삭제 — 기록을 먼저 지우고(반대 순서면 기록만 남고 파일이 없다) 그 다음 파일. 갤러리 원본은 건드리지 않는다
-export async function purgeRecord(id) {
+// 영구 삭제 — 기록을 먼저 지우고(반대 순서면 기록만 남고 파일이 없다) 그 다음 파일. 갤러리 원본은 건드리지 않는다.
+// 도면 핀은 지우지 않고 묶음 연결(recordId)만 푼다(핀 이름·자리는 도면보관함에 남는다).
+// deferPins: 부팅 휴지통 정리 — 도면 DB 를 부팅에서 열지 않게 핀 풀기는 한가할 때(setPinDefer) 따로
+export async function purgeRecord(id, { deferPins = false } = {}) {
   const gone = await serial(async () => {
     const r = cache.records.get(id);
     if (!r) return null;
     const ps = [...(photoIdx.get(id) ?? [])].map(pid => cache.photos.get(pid)).filter(Boolean);
     await commit({ delRecords: [id], delPhotos: ps.map(p => p.id), metas: rememberPurged([id], r) });
-    return ps;
+    return { ps, pin: r.pin || null };
   });
-  if (gone) await removeFiles(gone);
+  if (gone) {
+    await removeFiles(gone.ps);
+    if (deferPins) { const prev = pinTail; pinTail = (async () => { await prev; await pinDefer(); await unlinkPins(id, gone.pin); })(); }
+    else await unlinkPins(id, gone.pin);
+  }
   return !!gone;
+}
+
+// 도면보관함 핀의 묶음 연결 풀기(drawings.updatePin(pinId, { recordId: null })). 모듈이 없거나 실패해도 묶음 삭제는 끝난 것 — 조용히
+let pinTail = Promise.resolve();
+let pinDefer = () => Promise.resolve();
+export const pinsIdle = () => pinTail;                                       // 시험용 — 미룬 핀 풀기가 끝날 때까지
+// app.js 가 「첫 화면 뒤 한가할 때」 약속을 넘긴다(없으면 바로)
+export function setPinDefer(fn) { pinDefer = typeof fn === 'function' ? fn : () => Promise.resolve(); }
+async function unlinkPins(recordId, pin) {
+  try {
+    const dw = await import('./drawings.js');
+    if (typeof dw.updatePin !== 'function' || typeof dw.ready !== 'function') return 0;
+    await dw.ready();
+    const ids = new Set();
+    if (pin?.pinId && dw.pin?.(pin.pinId)?.recordId === recordId) ids.add(pin.pinId);
+    const all = [...(dw.drawings?.() ?? []), ...(dw.drawings?.({ deleted: true }) ?? [])];
+    for (const d of all) for (const deleted of [false, true]) for (const p of dw.pins?.(d.id, { deleted }) ?? []) if (p.recordId === recordId) ids.add(p.id);
+    for (const pid of ids) await dw.updatePin(pid, { recordId: null }).catch(e => console.warn('핀 연결을 풀지 못했어요', pid, e));
+    return ids.size;
+  } catch (e) { console.warn('도면 핀 연결 풀기 실패', e); return 0; }
 }
 
 async function removeFiles(photos) {
   await Promise.all(photos.flatMap(p => ['work', 'thumb', 'incoming'].map(kind => {
-    const k = `${p.id}:${kind}`;
-    if (urls.has(k)) { try { URL.revokeObjectURL(urls.get(k)); } catch { /* 없음 */ } urls.delete(k); }
-    return fs.remove(kind, p.id, p.store).catch(e => console.warn('사진 파일을 지우지 못했어요', e));
+    dropUrl(`${p.id}:${kind}`);
+    return fs.remove(kind, p.id, kind === 'incoming' ? (p.incoming || p.store) : p.store).catch(e => console.warn('사진 파일을 지우지 못했어요', e));
   })));
 }
 
@@ -304,8 +343,9 @@ export async function addIncoming(recordId, { id, raw, takenAt, takenAtSource = 
   }
 }
 
-// 작업본·썸네일 파일 저장 → ready → incoming 삭제
-export async function finishPhoto(id, { work, thumb, w, h, takenAt, takenAtSource } = {}) {
+// 작업본·썸네일 파일 저장 → ready → incoming 삭제.
+// keepIncoming: APK 갤러리 원본이 아직이면 incoming 파일과 메타 incoming 을 남긴다(recover 가 「ready + incoming = 갤러리 원본 아직」으로 본다)
+export async function finishPhoto(id, { work, thumb, w, h, takenAt, takenAtSource, keepIncoming = false } = {}) {
   if (!cache.photos.has(id)) throw fail('NO_PHOTO', '사진을 찾을 수 없어요');
   const s1 = (await fs.put('work', id, work)).store;
   await fs.put('thumb', id, thumb);
@@ -315,7 +355,9 @@ export async function finishPhoto(id, { work, thumb, w, h, takenAt, takenAtSourc
       const cur = cache.photos.get(id);
       if (!cur) throw fail('NO_PHOTO', '사진을 찾을 수 없어요');
       const p = { ...cur, state: 'ready', store: s1, w: num(w), h: num(h), bytes: sizeOf(work), thumbBytes: sizeOf(thumb), error: undefined };
+      const inc = cur.incoming ?? cur.store;
       delete p.error; delete p.incoming;
+      if (keepIncoming && inc) p.incoming = inc;
       if (takenAt != null) p.takenAt = takenAt;
       if (takenAtSource) p.takenAtSource = takenAtSource;
       await commit({ photos: [p] });
@@ -325,9 +367,27 @@ export async function finishPhoto(id, { work, thumb, w, h, takenAt, takenAtSourc
     if (e?.code === 'NO_PHOTO') { await fs.remove('work', id).catch(() => {}); await fs.remove('thumb', id).catch(() => {}); }   // 그새 영구 삭제됨 — 고아 파일을 남기지 않는다
     throw e;
   }
-  for (const k of ['work', 'thumb']) { const u = urls.get(`${id}:${k}`); if (u) { try { URL.revokeObjectURL(u); } catch { /* 없음 */ } urls.delete(`${id}:${k}`); } }
-  await fs.remove('incoming', id, res.incoming).catch(e => console.warn('incoming 을 지우지 못했어요', e));   // ready 로 저장된 뒤에만
+  for (const k of ['work', 'thumb']) dropUrl(`${id}:${k}`);
+  if (!keepIncoming) await fs.remove('incoming', id, res.incoming).catch(e => console.warn('incoming 을 지우지 못했어요', e));   // ready 로 저장된 뒤에만
   return res.photo;
+}
+
+// 갤러리 원본을 넣은 뒤(또는 필요 없어진 뒤) — 메타의 incoming 표지를 먼저 지우고 그다음 파일(반대 순서면 recover 가 없는 파일을 찾는다).
+// ready 일 때만(처리 중·실패면 incoming 이 유일한 원본이라 남긴다). 사진 메타가 없으면 파일만. → true(지움) | false
+export async function releaseIncoming(id) {
+  const r = await serial(async () => {
+    const cur = cache.photos.get(id);
+    if (!cur) return { inc: undefined };
+    if (cur.state !== 'ready' || !cur.incoming) return null;
+    const p = { ...cur };
+    delete p.incoming;
+    await commit({ photos: [p] });
+    return { inc: cur.incoming };
+  });
+  if (!r) return false;
+  dropUrl(`${id}:incoming`);
+  await fs.remove('incoming', id, r.inc).catch(e => console.warn('incoming 을 지우지 못했어요', e));
+  return true;
 }
 
 // 실패 — incoming 은 남긴다(다시 처리할 수 있게). error 가 code 를 가지면 errorCode 로 남긴다(BROKEN·NO_SOURCE 는 다시 해도 안 됨)
@@ -448,7 +508,15 @@ export async function src(photoId, kind = 'thumb') {
   const key = `${photoId}:${kind}`;
   if (urls.has(key)) return urls.get(key);
   const u = await fs.url(kind, photoId, kind === 'incoming' ? (p.incoming ?? p.store) : p.store);
-  if (u && u.startsWith('blob:')) urls.set(key, u);
+  if (!u) return u;
+  if (urls.has(key)) {                                                       // 그새 같은 주소를 만든 호출이 먼저 넣었다 — 그것을 쓴다
+    if (u !== urls.get(key) && u.startsWith('blob:')) { try { URL.revokeObjectURL(u); } catch { /* 없음 */ } }
+    return urls.get(key);
+  }
+  if (cache.photos.get(photoId) !== p) {                                     // 기다리는 사이 사진이 바뀌었다(다시 처리 등) — 캐시하지 않는다
+    return u;
+  }
+  urls.set(key, u);                                                          // APK 예전 사진(파일 주소)도 캐시 — 다시 그릴 때 브리지 0(속도 감사 #4)
   return u;
 }
 
@@ -497,7 +565,11 @@ export async function merge({ records = [], photos = [] } = {}, getBlob = null) 
       } catch (e) { if (e?.code === 'QUOTA') throw e; console.warn('복원 사진 파일 쓰기 실패', q.id, e); }
     }
     if (!store) store = (await fs.has('thumb', q.id, q.store)) && (await fs.has('work', q.id, q.store));
-    if (store) { q.store = store; withFiles++; }
+    if (store) {
+      q.store = store; withFiles++;
+      // 갤러리 원본이 아직이던 사진(메타에 incoming) — 이 기기에 그 파일이 있으면 표지를 남긴다(부팅 recover 가 원본 줄로 보내거나 치운다 §4.5)
+      if (p.incoming && q.state === 'ready') { const inc = await fs.has('incoming', q.id).catch(() => null); if (inc) q.incoming = inc; }
+    }
     else if (q.state === 'ready') {                                          // 본체가 어디에도 없다 — 메타는 살리고 「처리 실패」로(갤러리 원본으로 다시 만들 수 있게)
       const inc = await fs.has('incoming', q.id);
       if (inc) { q.state = 'processing'; q.store = inc; q.incoming = inc; }

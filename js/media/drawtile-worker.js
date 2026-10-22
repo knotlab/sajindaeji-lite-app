@@ -1,8 +1,10 @@
 // 큰 도면 타일 워커(클래식 워커 — drawtiles.js 가 띄운다). 메인 스레드는 기다리기만 한다(디코드·줄이기·자르기·인코딩 전부 여기서).
-// 받는 것: { op:'build', id, blob, tileSize, format:'auto'|'jpeg'|'png', q, maxPx, bg:[r,g,b] }
+// 받는 것: { op:'build', id, blob, tileSize, format:'auto'|'jpeg'|'png', q, maxPx, maxSide, bg:[r,g,b], previewMax }
 //          { op:'ack', id, n }   — 메인이 타일 n 개를 저장했다(그만큼 더 보내도 된다: 저장보다 너무 앞서가며 메모리를 쌓지 않게)
 //          { op:'ping', id }
-// 보내는 것: { op:'plan', id, w, h, srcW, srcH, levels:[{w,h,cols,rows}], total, format, sample }
+// 보내는 것: { op:'size', id, w, h, srcW, srcH, levels:[{w,h,cols,rows}], total }   — 단계 크기를 정하자마자(쪽 크기 = 핀 좌표 잣대)
+//          { op:'preview', id, blob, w, h }                 — previewMax 를 주면 미리보기 한 장(긴 변 ≤ previewMax, JPEG) — 타일보다 먼저
+//          { op:'plan', id, w, h, srcW, srcH, levels:[{w,h,cols,rows}], total, format, sample }
 //          { op:'tile', id, z, x, y, blob }               — 빈 타일(바탕색 한 가지)은 보내지 않는다
 //          { op:'blank', id, z, x, y }
 //          { op:'done', id, ms:{decode, levels, tiles, total}, bytes, tiles, blank }
@@ -76,8 +78,10 @@ async function build(m) {
   let full = await createImageBitmap(m.blob);
   let W = full.width, H = full.height;
   const srcW = W, srcH = H;
-  if (m.maxPx && W * H > m.maxPx) {
-    const k = Math.sqrt(m.maxPx / (W * H));
+  const kPx = m.maxPx && W * H > m.maxPx ? Math.sqrt(m.maxPx / (W * H)) : 1;
+  const kSide = m.maxSide && Math.max(W, H) > m.maxSide ? m.maxSide / Math.max(W, H) : 1;
+  if (kPx < 1 || kSide < 1) {
+    const k = Math.min(kPx, kSide);
     const w2 = Math.max(1, Math.floor(W * k)), h2 = Math.max(1, Math.floor(H * k));
     full.close();
     full = await createImageBitmap(m.blob, { resizeWidth: w2, resizeHeight: h2, resizeQuality: 'high' });
@@ -115,6 +119,22 @@ async function build(m) {
     pics[z] = s.c;
   }
   const T2 = performance.now();
+  self.postMessage({ op: 'size', id: m.id, w: W, h: H, srcW, srcH, levels, total });
+
+  // ③-1 미리보기 한 장(작은 창·위치도·타일이 오기 전 바닥) — previewMax 보다 큰 단계 중 가장 작은 것에서 줄인다
+  if (m.previewMax > 0) {
+    let zi = L - 1;
+    for (let z = 0; z < L; z++) if (Math.max(sizes[z][0], sizes[z][1]) >= m.previewMax) { zi = z; break; }
+    const k = Math.min(1, m.previewMax / Math.max(W, H));
+    const pw = Math.max(1, Math.round(W * k)), ph = Math.max(1, Math.round(H * k));
+    const pv = canvas(pw, ph);
+    fill(pv.g);
+    pv.g.imageSmoothingEnabled = true; pv.g.imageSmoothingQuality = 'high';
+    pv.g.drawImage(pics[zi], 0, 0, pw, ph);
+    const pblob = await encode(pv.c, 'jpeg', 0.85);
+    pv.c.width = pv.c.height = 0;
+    self.postMessage({ op: 'preview', id: m.id, blob: pblob, w: pw, h: ph });
+  }
 
   // ④ 형식 고르기 — 원본 단계에서 고루 뽑은 빈 아닌 타일 몇 개를 두 형식으로 인코딩해 본다
   const t = canvas(T, T, true);
