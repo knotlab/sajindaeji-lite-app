@@ -4,10 +4,14 @@
 // 사진은 §4.5(공시체 BUGREPORT): 셔터 결과 원본을 incoming 파일에 먼저 쓰고 메타(processing)+photoIds 를 같이 저장 → 작업본·썸네일 → ready → incoming 삭제.
 //   APK 갤러리 원본이 필요한 사진은 ready 뒤에도 incoming 을 남겼다가(finishPhoto keepIncoming) 갤러리에 넣은 뒤 releaseIncoming(속도 감사 #7 — 원본 사본 단계 없앰).
 // 도면 핀(v0.1.4): 핀은 도면보관함(data/drawings.js) 한 곳에만. 묶음에는 연결 표지 record.pin = { drawingId, pinId } | null 만.
+// 순서(v0.1.7, 계산은 core/order.js 한 곳): 하루 묶음 순서 = record.order(분수 ms, 없으면 createdAt — 0.1.5 기록은 이주 없음). recordsOfDay·days 는 사진대지 순서,
+//   새 묶음은 그 날 맨 끝(nextOrder — 지금 시각과 같으면 칸을 쓰지 않는다), 바꾸기는 reorderRecords(옮긴 묶음만 rev+1)·reorderPhotos(photoIds — 1번이 대표) 만.
+//   updateRecord 로는 순서를 바꾸지 못한다. 합치기(merge)의 photoIds 는 이긴 쪽 순서 + 진 쪽에만 있는 사진(order.mergeIds).
 import * as self from './store.js';
 import * as db from './db.js';
 import * as fs from './photofs.js';
 import { uid, newRecord, newPhoto, touch, recordNo } from '../core/model.js';
+import { compareOrder, nextOrder, planOrder, reorderTo, mergeIds } from '../core/order.js';
 import { mergeRecord, mergePhoto, cleanRecordPin } from '../core/backup.js';
 import { TRASH_DAYS } from '../config.js';
 import { dayKey } from '../core/date.js';
@@ -23,10 +27,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   stageAutoPicked: false,                                                      // 설정 화면에서 자동 돌아가기를 직접 바꿈 — 아니면 저장된 stageAutoReturn 을 보지 않는다
   wmWhen: 'datetime',                                                          // 촬영 일시: 'datetime' 날짜+시간 | 'date' 날짜만 | 'off' 안 넣기(옛 wmDate 는 읽기 호환용으로 남김)
 });
-const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 글 칸 — 번호·rev·사진 순서·휴지통은 전용 함수 몫
+const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 글 칸 — 번호·rev·묶음 순서(order)·사진 순서·휴지통은 전용 함수 몫
 export { cleanRecordPin };                                                   // 도면 핀 연결 모양 확인(core/backup.js)
 const PHOTO_FIXED = ['id', 'recordId', 'state', 'store', 'deletedAt', 'createdAt'];
 const PURGED_MAX = 2000;                                                     // 영구 삭제한 묶음 id 기억(복원 제안이 지운 것을 「잃어버린 것」으로 보지 않게)
+const PURGED_PHOTOS_MAX = 5000;                                              // 영구 삭제한 사진 id 기억(meta purgedPhotoIds) — 옛 백업을 합쳐도 되살리지 않게(merge)
 
 const cache = { records: new Map(), photos: new Map(), meta: new Map() };
 const photoIdx = new Map();                                                  // recordId → Set(photoId)
@@ -193,7 +198,8 @@ export const setLastLocation = (text, now = Date.now()) => setMeta('lastLocation
 // ---- 조회(동기) ----
 export const record = id => cache.records.get(id);
 export const photo = id => cache.photos.get(id);
-export const recordsOfDay = day => [...cache.records.values()].filter(r => r.day === day && !r.deletedAt).sort((a, b) => a.createdAt - b.createdAt || (a.no < b.no ? -1 : 1));
+// 그 날 살아 있는 묶음 — 사진대지 순서(order → 만든 시각 → 관리번호 → id. 순서를 안 바꾼 날은 만든 시각 순 그대로)
+export const recordsOfDay = day => [...cache.records.values()].filter(r => r.day === day && !r.deletedAt).sort(compareOrder);
 // 사진의 recordId 가 이 묶음인 것만(복원 merge 로 같은 id 가 두 묶음 photoIds 에 들어가도 한 묶음에만 보이게)
 export const photosOf = recordId => (cache.records.get(recordId)?.photoIds ?? []).map(id => cache.photos.get(id)).filter(p => p && !p.deletedAt && p.recordId === recordId);
 export function days() {
@@ -206,7 +212,7 @@ export function days() {
   }
   const out = [];
   for (const { day, list } of by.values()) {
-    list.sort((a, b) => a.createdAt - b.createdAt);
+    list.sort(compareOrder);                                                 // 표지 4장도 사진대지 순서(묶음 순서 → 그 안 사진 순서)
     let photos = 0;
     const cover = [];
     for (const r of list) for (const p of photosOf(r.id)) { photos++; if (cover.length < 4 && p.state === 'ready') cover.push(p.id); }
@@ -232,7 +238,12 @@ function nextSeq(day) {
 
 export function createRecord({ day, location = '', content = '', now = Date.now() } = {}) {
   return serial(async () => {
-    const rec = newRecord({ id: freshId('r', cache.records), day, now, location, content, site: settings().siteName, seq: nextSeq(day || dayKey(now)) });
+    const d = day || dayKey(now);
+    const sameDay = [];
+    for (const r of cache.records.values()) if (r.day === d) sameDay.push(r);   // 휴지통 것도 — 되살려도 새 묶음이 그 뒤
+    const o = nextOrder(sameDay, now);                                         // 그 날 맨 끝(시계가 뒤로 갔거나 누가 끝으로 옮겼어도)
+    const rec = newRecord({ id: freshId('r', cache.records), day: d, now, location, content, site: settings().siteName, seq: nextSeq(d) });
+    if (o !== now) rec.order = o;                                              // 칸은 쓸 때만(만든 시각과 같으면 없음)
     await commit({ records: [rec] });
     return cache.records.get(rec.id);
   });
@@ -261,6 +272,35 @@ export function updateRecord(id, patch = {}, now = Date.now()) {
   });
 }
 
+// 하루 묶음 순서(사진대지·대장·카톡 글·위치도·홈·내보내기 목록). ids = 그 날 살아 있는 묶음 id 를 원하는 순서로(화면 순서 그대로).
+// 쓰기 줄 안에서 최신 캐시로 계산(core/order.js planOrder — 가장 긴 증가 부분열은 그대로): 옮긴 묶음만 order 새 값 + rev+1(합치기에서 이 순서가 이긴다),
+// 한 트랜잭션·알림 한 번(미러도 바뀐 조각만). ids 에 없는 묶음(끄는 사이 새로 들어온 것)·모르는·겹친 id 는 그대로. 관리번호·만든 시각 그대로.
+// → { changed: 쓴 묶음 수, order: 그 날 새 순서 id[] }
+export function reorderRecords(day, ids, now = Date.now()) {
+  return serial(async () => {
+    const plan = planOrder(recordsOfDay(day), ids);
+    if (!plan.changes.length) return { changed: 0, order: recordsOfDay(day).map(r => r.id) };
+    const recs = plan.changes.map(c => touch({ ...cache.records.get(c.id), order: c.order }, now));
+    await commit({ records: recs });
+    return { changed: recs.length, order: recordsOfDay(day).map(r => r.id) };
+  });
+}
+
+// 묶음 안 사진 순서(사진 번호 — 1번이 대표: 홈 줄 첫 썸네일·대장 대표 사진·표지). ids = 보이는 사진 id 를 원하는 순서로(화면 순서 그대로).
+// 지운 사진 id 는 photoIds 에 남기되 바로 앞 사진 뒤에 붙어 따라간다(되살리면 그 근처 — order.reorderTo), ids 에 없는 살아 있는 사진도 앞 사진을 따라 제자리.
+// 처리 중·실패 사진도 살아 있는 사진(격자에 보인다). 바뀐 게 없으면 쓰지 않는다. rev+1. 없거나 휴지통 묶음이면 NO_RECORD
+export function reorderPhotos(recordId, ids, now = Date.now()) {
+  return serial(async () => {
+    const r = cache.records.get(recordId);
+    if (!r || r.deletedAt) throw fail('NO_RECORD', '묶음을 찾을 수 없어요');
+    const live = new Set(photosOf(recordId).map(p => p.id));
+    const next = reorderTo(r.photoIds, (Array.isArray(ids) ? ids : []).filter(id => live.has(id)));
+    if (same(next, r.photoIds)) return r;
+    await commit({ records: [touch({ ...r, photoIds: next }, now)] });
+    return cache.records.get(recordId);
+  });
+}
+
 // 휴지통 — rev 는 그대로, updatedAt 만. 이미 그 상태면 아무것도 하지 않는다(삭제 시각을 새로 찍으면 30일 시계가 늘어난다)
 const trashRecord = (id, at, now) => serial(async () => {
   const cur = cache.records.get(id);
@@ -272,6 +312,11 @@ const trashRecord = (id, at, now) => serial(async () => {
 export const deleteRecord = (id, now = Date.now()) => trashRecord(id, now, now);
 export const restoreRecord = (id, now = Date.now()) => trashRecord(id, null, now);
 
+// 영구 삭제한 사진 id — 같은 기기의 옛 백업(자동 백업·수동 ZIP)을 합칠 때 그 사진을 다시 붙이지 않는다(0.1.7 결정 10 으로 「이 기기가 이김」에서도
+//   백업에만 있는 사진을 붙이게 되자, 영구 삭제한 사진이 「처리 실패」 칸으로 되살아났다 — 검토 major). 같은 commit 으로 쓴다
+function rememberPurgedPhotos(ids) {
+  return ['purgedPhotoIds', [...(cache.meta.get('purgedPhotoIds') ?? []), ...ids].slice(-PURGED_PHOTOS_MAX)];
+}
 function rememberPurged(ids, rec) {
   const list = [...(cache.meta.get('purgedIds') ?? []), ...ids].slice(-PURGED_MAX);
   const metas = [['purgedIds', list]];
@@ -291,7 +336,9 @@ export async function purgeRecord(id, { deferPins = false } = {}) {
     const r = cache.records.get(id);
     if (!r) return null;
     const ps = [...(photoIdx.get(id) ?? [])].map(pid => cache.photos.get(pid)).filter(Boolean);
-    await commit({ delRecords: [id], delPhotos: ps.map(p => p.id), metas: rememberPurged([id], r) });
+    const metas = rememberPurged([id], r);
+    if (ps.length) metas.push(rememberPurgedPhotos(ps.map(p => p.id)));
+    await commit({ delRecords: [id], delPhotos: ps.map(p => p.id), metas });
     return { ps, pin: r.pin || null };
   });
   if (gone) {
@@ -499,7 +546,7 @@ export async function purgePhoto(id, now = Date.now()) {
     if (!cur) return null;
     const r = cache.records.get(cur.recordId);
     const recs = r && r.photoIds.includes(id) ? [touch({ ...r, photoIds: r.photoIds.filter(x => x !== id) }, now)] : [];
-    await commit({ records: recs, delPhotos: [id] });
+    await commit({ records: recs, delPhotos: [id], metas: [rememberPurgedPhotos([id])] });
     return cur;
   });
   if (gone) await removeFiles([gone]);
@@ -546,16 +593,19 @@ export function snapshot() {
 export const photosOfAll = recordId => [...(photoIdx.get(recordId) ?? [])].map(id => cache.photos.get(id)).filter(Boolean);
 
 // 들어온 기록을 지금 것과 합친다. 사진 본체: getBlob 으로 받아 쓰거나, 없으면 파일 저장소에 이미 있는지 본다(IDB 만 죽고 OPFS·파일이 산 경우).
-// 파일은 먼저 쓰고, 메타는 한 트랜잭션으로(중간에 끊겨도 「일부만 복원된」 상태가 남지 않게)
-export async function merge({ records = [], photos = [] } = {}, getBlob = null) {
+// 파일은 먼저 쓰고, 메타는 한 트랜잭션으로(중간에 끊겨도 「일부만 복원된」 상태가 남지 않게).
+// 이 기기에서 영구 삭제한 사진(meta purgedPhotoIds + 부른 쪽이 준 purgedPhotoIds)은 들어와도 되살리지 않는다 — 사진 메타도, 묶음 photoIds 에서도 뺀다
+export async function merge({ records = [], photos = [], purgedPhotoIds = null } = {}, getBlob = null) {
   if (!ready) throw fail('NOT_READY', '저장소가 열려 있지 않아요');
   await flush();
   const okRec = r => r && typeof r === 'object' && typeof r.id === 'string' && Array.isArray(r.photoIds);
   const okPh = p => p && typeof p === 'object' && typeof p.id === 'string' && typeof p.recordId === 'string';
+  const gone = new Set([...(cache.meta.get('purgedPhotoIds') ?? []), ...(Array.isArray(purgedPhotoIds) ? purgedPhotoIds : [])]);
+  const live = r => (gone.size && r.photoIds.some(id => gone.has(id)) ? { ...r, photoIds: r.photoIds.filter(id => !gone.has(id)) } : r);
   let skipped = 0;
   const incR = new Map(), incP = new Map();
-  for (const r of records) { if (okRec(r)) incR.set(r.id, mergeRecord(incR.get(r.id), r)); else skipped++; }
-  for (const p of photos) { if (okPh(p)) incP.set(p.id, mergePhoto(incP.get(p.id), p)); else skipped++; }
+  for (const r of records) { if (okRec(r)) incR.set(r.id, mergeRecord(incR.get(r.id), live(r))); else skipped++; }
+  for (const p of photos) { if (okPh(p) && !gone.has(p.id)) incP.set(p.id, mergePhoto(incP.get(p.id), p)); else skipped++; }
   const known = new Set([...cache.records.keys(), ...incR.keys()]);
 
   // 사진 파일 먼저(쓰기 줄 밖)
@@ -594,13 +644,23 @@ export async function merge({ records = [], photos = [] } = {}, getBlob = null) 
     const outR = [];
     const finalP = new Map(outP.map(p => [p.id, p]));
     const ownerOf = id => (finalP.get(id) || cache.photos.get(id))?.recordId;
+    const mine = (ids, rid) => ids.filter(id => { const o = ownerOf(id); return !o || o === rid; });   // 다른 묶음 사진이면 뺀다
     for (const r of incR.values()) {
       const cur = cache.records.get(r.id);
       const win = mergeRecord(cur, r);
-      if (win === cur) { skipped++; continue; }
+      if (win === cur) {
+        // 이 기기가 이김(rev·updatedAt) — 그래도 들어온 쪽이 가진 이 묶음 사진(이번에 함께 들어오는 사진, 또는 메타만 있고 photoIds 에서 빠진 사진)은 붙인다
+        // (결정 10 — 안 붙이면 사진 메타만 있고 화면에 안 보인다. 끌기로 rev 가 자주 올라 이 기기가 이기는 일이 늘었다). 자리는 들어온 쪽 앞 이웃 뒤, rev 는 그대로
+        const have = new Set(cur?.photoIds || []);
+        const extra = new Set((r.photoIds || []).filter(id => !have.has(id) && ownerOf(id) === r.id));
+        if (!cur || !extra.size) { skipped++; continue; }
+        outR.push({ ...cur, photoIds: mine(mergeIds(cur.photoIds, r.photoIds.filter(id => have.has(id) || extra.has(id))), cur.id) });
+        updated++;
+        continue;
+      }
       const out = clone(win);
-      if (cur) { const have = new Set(cur.photoIds); out.photoIds = [...cur.photoIds, ...out.photoIds.filter(id => !have.has(id))]; }   // 이 기기에서 그 뒤에 넣은 사진을 빼지 않는다
-      out.photoIds = out.photoIds.filter(id => { const o = ownerOf(id); return !o || o === out.id; });   // 다른 묶음 사진이면 뺀다
+      if (cur) out.photoIds = mergeIds(out.photoIds, cur.photoIds);           // 이긴 쪽(들어온 것) 사진 순서 + 이 기기에서 그 뒤 넣은 사진은 이 기기 쪽 앞 이웃 뒤(빼지 않는다)
+      out.photoIds = mine(out.photoIds, out.id);
       outR.push(out);
       if (cur) updated++; else added++;
     }

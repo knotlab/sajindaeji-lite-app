@@ -2,7 +2,11 @@
 // 위쪽 고정: 앱 이름 + 현장명, 톱니. 백업 알림 한 줄(7일 넘으면). 한 줄에 현재 위치 카드(gpsLine — 누르면 실시간 위치 지도 'map') + [도면]·[자료함] 버튼
 //   (v0.1.5 검토: 위쪽 고정이 약 248px 라 360×640 에서 묶음이 1.7개만 보였다 → 한 줄로 줄여 날짜 페이지에 약 70px 더). 위치 맞춘 도면 안에 서 있으면 그 아래 「지금 여기: A-501 · 열기」 한 줄.
 // 그 아래 날짜 넘기기(widgets/daypager.js): 가로로 밀어 날짜 이동(오늘보다 뒤는 버팀), 머리 ‹ 날짜 › (날짜를 누르면 날짜 고르기).
-//   페이지마다 그 날 묶음 목록(최신이 위) + 「묶음 n · 사진 n」 + [내보내기](그 날짜로 내보내기 탭), 지난 날은 [이 날짜에 사진 추가], 그 날 핀이 있으면 위치도.
+//   페이지마다 그 날 묶음 목록 + 「묶음 n · 사진 n」 + [내보내기](그 날짜로 내보내기 탭), 지난 날은 [이 날짜에 사진 추가], 그 날 핀이 있으면 위치도.
+//   목록은 사진대지 순서(위가 먼저 — v0.1.7 결정 1 A안, 새 묶음은 맨 아래). 오늘 페이지는 처음 열 때 맨 아래(최신)가 보이고,
+//   묶음 상세 등에 다녀오면 보던 자리(params.scroll — 그새 그 날 묶음이 늘었으면 맨 아래).
+//   줄을 길게 눌러(450ms — 폴더 고르기와 같은 시간) 끌면 순서가 바뀐다(widgets/reorder.js → store.reorderRecords, 옮긴 묶음만 쓴다) + 5초 [되돌리기].
+//   처음 한 번만 안내 한 줄(묶음 2개 이상인 날 — 한 번 끌거나 3번 보였거나 3일 지나면 다시 안 보임, meta hintDragRecord).
 // 아래 dock [기록 시작](탭 막대 바로 위 — 노랑은 이것 하나). 지난 날을 보고 있어도 기록은 오늘로.
 // 보고 있는 날짜는 params.day 에 적는다(묶음 상세에 다녀와 다시 mount 돼도 같은 날짜 — router 가 같은 params 객체를 쥔다).
 // 홈 탭을 다시 누르면 오늘로(onReenter), 안드로이드 뒤로: 지난 날 → 오늘 → 앱 최소화(onBack).
@@ -15,8 +19,9 @@ import * as gpsW from '../widgets/gpsline.js';
 import * as config from '../../config.js';
 import * as camera from '../../media/camera.js';
 import { dayPager } from '../widgets/daypager.js';
+import { reorderable } from '../widgets/reorder.js';
 import { dayKey, dayStart, dayLabel } from '../../core/date.js';
-import { pickImages, addFromGallery, galleryToast } from './record.js';
+import { pickImages, addFromGallery, galleryToast, hintLive } from './record.js';
 import { locGroups, locRow } from './day.js';
 
 const { h, icon } = dom;
@@ -24,6 +29,9 @@ const toast = (t, ms) => dom.toast?.(t, ms);
 const cnt = v => (typeof v === 'number' ? v : (v?.length ?? 0));
 const DAY_MS = 864e5;
 const BACKUP_WARN_DAYS = 7;
+const LONG_MS = 450;                                 // 길게 눌러 들기(폴더 고르기 folderbar 와 같은 시간)
+const END_SLACK = 24;                                // 이만큼 안이면 「맨 아래를 보고 있다」(px)
+const HINT_KEY = 'hintDragRecord';                   // 처음 한 번 안내 — 끌었거나 3번 보였거나 3일 지나면 다시 안 띄운다(record.js hintLive)
 const validDay = d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d);
 // 줄이 보이는 값(같으면 줄을 다시 만들지 않는다). 계산할 수 없으면 NaN — 늘 다시 만든다
 const rowSig = r => (typeof rowW.recordRowSig === 'function' ? rowW.recordRowSig(r) : NaN);
@@ -93,13 +101,72 @@ function nearestDay(day, today) {
   return best;
 }
 
-// 한 날짜 페이지 — 다시 그릴 때는 같은 요소를 고쳐 쓴다(바뀐 줄만). M = 도면보관함 모듈(아직이면 null — 위치도 구역만 빠진다)
-function dayPage(day, old, nav, M) {
+// ---- 날짜 페이지 스크롤 자리(A안) ----
+// 처음 그릴 때 한 번: 'end'(맨 아래) | 숫자(그 scrollTop) | 0(맨 위 — 할 일 없음).
+// saved = params.scroll { day, top, end, n }(화면을 떠날 때 적음): 맨 아래였거나 그새 그 날 묶음이 늘었으면(촬영·갤러리에서 돌아옴) 맨 아래
+export function scrollWant(day, today, n, saved) {
+  if (saved && saved.day === day) {
+    if (saved.end || n > (Number.isFinite(saved.n) ? saved.n : n)) return 'end';
+    return saved.top > 0 ? saved.top : 0;
+  }
+  return day === today ? 'end' : 0;
+}
+// 날짜 넘기기가 만든 세로 스크롤 상자(dpg-page)에 — 첫 그림 전(rAF)에 부른다(그때 배치는 어차피 그림에 필요하다)
+function setScroll(el, want) {
+  const w = el.parentElement;
+  if (!w || !el.isConnected || w.hidden) return;
+  w.scrollTop = want === 'end' ? w.scrollHeight : want;               // 넘치면 끝으로 잘린다
+}
+const atEnd = el => { const w = el.parentElement; return !!w && !w.hidden && w.scrollTop + w.clientHeight >= w.scrollHeight - END_SLACK; };
+
+// 처음 한 번 안내 — 한 번 끌었거나(meta 에 시각 숫자) 홈을 3번 열어 보였거나 처음 본 지 3일이 지나면(meta { n, at }) 더는 안 띄운다
+//   (검토: 순서를 안 바꾸는 사용자는 이 줄을 늘 봤다 — 360×640 목록 칸 약 331px 중 27px. CLAUDE.md 「한 번 알면 되는 안내는 처음 한 번만」)
+let hintGone = false, hintCounted = false;
+const hintDone = () => hintGone || !hintLive(store.meta?.(HINT_KEY, null));
+function markHint() {
+  if (hintGone || typeof store.meta?.(HINT_KEY, null) === 'number') { hintGone = true; return; }   // 이미 끈 적 있음 — 다시 쓰지 않는다
+  hintGone = true;
+  store.setMeta?.(HINT_KEY, Date.now())?.catch?.(e => console.warn('안내 표지를 남기지 못했다', e));
+}
+// 이번 홈 화면에서 안내가 보였다 — 화면마다 한 번 센다(쓰기는 한가할 때 — 첫 그림·부팅과 다투지 않게)
+function countHint() {
+  if (hintCounted || hintDone()) return;
+  hintCounted = true;
+  idle(() => {
+    const v = store.meta?.(HINT_KEY, null);
+    if (typeof v === 'number') return;                                     // 그새 끌었다
+    store.setMeta?.(HINT_KEY, { n: (v?.n || 0) + 1, at: v?.at || Date.now() })?.catch?.(e => console.warn('안내 표지를 남기지 못했다', e));
+  });
+}
+
+// 묶음을 끌어 놓음 — 화면(DOM)은 이미 새 순서. 저장은 뒤에서(옮긴 묶음만, store.reorderRecords), 되돌리기는 든 때의 순서로
+function dropRecords(day, keys, el) {
+  const before = el._before || null;
+  el._before = null;
+  markHint();
+  el._hint.hidden = true;
+  dom.snackbar?.('순서를 바꿨어요', {
+    actionLabel: '되돌리기',
+    onAction: () => (before ? store.reorderRecords(day, before) : null),
+  });
+  store.reorderRecords(day, keys).catch(e => {
+    console.error('순서를 저장하지 못했다', e);
+    toast('순서를 저장하지 못했어요. 다시 해 주세요');
+    mounted?.pager.refresh(day);                                        // 저장된 순서로 다시
+  });
+}
+
+// 한 날짜 페이지 — 다시 그릴 때는 같은 요소를 고쳐 쓴다(바뀐 줄만).
+// ctx = { nav, M(도면보관함 모듈 — 아직이면 null, 위치도 구역만 빠진다), scroll(params.scroll), refresh(day) }
+function dayPage(day, old, ctx) {
+  const { nav, M } = ctx;
   const today = dayKey(Date.now());
-  const asc = store.recordsOfDay(day) || [];                           // createdAt 오름차순
-  const recs = [...asc].reverse();                                     // 최신이 위
+  const recs = store.recordsOfDay(day) || [];                          // 사진대지 순서(위가 먼저 — A안)
   let el = old;
+  // 맨 아래를 보고 있었는데 새 묶음이 끝에 붙으면 계속 맨 아래(바뀌기 전 자리를 그때만 잰다 — 보통 다시 그리기에는 읽지 않는다)
+  const follow = !!old && old._today && day === today && recs.length > (old._n ?? recs.length) && recs.at(-1)?.id !== old._last && atEnd(old);
   if (!el || el._today !== (day === today)) {
+    if (old) { try { old._ro?.destroy(); } catch { /* 무시 */ } }      // 자정을 넘겨 새로 만든다 — 앞 페이지의 끌기는 걷는다
     el = h('div', { class: 'home-page', 'data-day': day });
     el._today = day === today;
     el._sum = h('span', { class: 'home-page-sum', 'data-testid': 'day-sum' });
@@ -112,13 +179,33 @@ function dayPage(day, old, nav, M) {
     el._locList = h('div', { class: 'day-loc-list' });
     el._loc = h('section', { class: 'day-loc home-page-loc', 'data-testid': 'day-locmap', 'aria-label': '위치도', hidden: true },
       h('h2', { class: 'day-loc-h', text: el._today ? '오늘 위치도' : '이 날 위치도' }), el._locList);
-    el.append(h('div', { class: 'home-page-head' }, el._sum, el._xp), el._list, el._empty, el._near, ...(day < today ? [addBtn(day, nav)] : []), el._loc);
+    el._hint = h('p', { class: 'home-hint', 'data-testid': 'day-order-hint', text: '길게 눌러 끌면 순서가 바뀌어요', hidden: true });
+    el.append(h('div', { class: 'home-page-head' }, el._sum, el._xp), el._list, el._hint, el._empty, el._near, ...(day < today ? [addBtn(day, nav)] : []), el._loc);
+    // 길게 눌러 끌기(목록 줄 = 항목). 날짜 넘기기와 다투지 않는다(든 뒤에는 그 손가락의 움직임을 위로 안 보냄 — reorder.js)
+    const pageEl = el;
+    el._ro = reorderable(el._list, {
+      mode: 'list', start: 'longpress', longPressMs: LONG_MS, keyOf: x => x.dataset.id,
+      onLift: () => { pageEl._before = (store.recordsOfDay(day) || []).map(r => r.id); },
+      onCancel: () => { pageEl._before = null; },
+      onDrop: ({ keys }) => dropRecords(day, keys, pageEl),
+    });
+    const want = scrollWant(day, today, recs.length, ctx.scroll);
+    if (ctx.scroll?.day === day) ctx.scroll = null;                    // 다녀온 자리는 한 번만(캐시에서 빠졌다 다시 그릴 때는 기본으로)
+    if (want) requestAnimationFrame(() => setScroll(pageEl, want));
   }
   let photos = 0;
   for (const r of recs) photos += cnt(store.photosOf(r.id));
   el._sum.textContent = `묶음 ${recs.length} · 사진 ${photos}`;
   el._xp.hidden = !recs.length;
-  dom.syncList(el._list, recs, { key: r => r.id, sig: rowSig, make: r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) }) });
+  // 길게 누르는 중·끄는 중에는 줄을 건드리지 않는다(줄이 바뀌면 들지 못하거나 끌기가 취소된다) — 뗀 뒤 이 날을 다시 그린다
+  if (el._ro && el._ro.state() !== 'idle') el._ro.afterDrag(() => ctx.refresh?.(day));
+  else {
+    dom.syncList(el._list, recs, { key: r => r.id, sig: rowSig, make: r => rowW.recordRow(r, { onOpen: x => nav.go('record', { id: (x && x.id) || r.id }) }) });
+    el._n = recs.length; el._last = recs.at(-1)?.id;
+    if (follow) { const pageEl = el; requestAnimationFrame(() => setScroll(pageEl, 'end')); }
+  }
+  el._hint.hidden = !(recs.length >= 2 && !hintDone());
+  if (!el._hint.hidden) countHint();
   el._list.hidden = !recs.length;
   el._empty.hidden = !!recs.length;
   el._empty.textContent = el._today ? '아직 기록이 없어요. 아래 [기록 시작]을 눌러요.' : '이 날짜엔 기록이 없어요.';
@@ -127,7 +214,7 @@ function dayPage(day, old, nav, M) {
   if (near) { el._near.dataset.day = near; el._near.textContent = `가장 가까운 기록 ${dayLabel(near).replace(/ \(.\)$/, '')} 보기`; }
   // 그 날 위치도 — 도면·쪽별 한 줄(미리보기 한 장 + 핀 점) → 도면 보기
   let groups = [];
-  if (M && asc.length) { try { groups = locGroups(M, asc); } catch (e) { console.warn('위치도 묶기 실패', e); } }
+  if (M && recs.length) { try { groups = locGroups(M, recs); } catch (e) { console.warn('위치도 묶기 실패', e); } }
   el._loc.hidden = !groups.length;
   dom.syncList(el._locList, groups, { key: g => g.key, sig: groupSig, make: g => locRow(g, M, nav) });
   return el;
@@ -136,6 +223,7 @@ function dayPage(day, old, nav, M) {
 export default {
   mount(root, params, nav) {
     let dead = false, shownDay = dayKey(Date.now());
+    hintCounted = false;                                       // 안내가 보이면 이 화면에서 한 번 센다
     let docsMod = null, offDocs = null;
 
     // 상단 바
@@ -189,12 +277,24 @@ export default {
     const today0 = dayKey(Date.now());
     const day0 = validDay(params?.day) && params.day < today0 ? params.day : today0;
     if (day0 === today0) delete params.day;
+    const ctx = { nav, M: null, scroll: params.scroll && typeof params.scroll === 'object' ? params.scroll : null, refresh: null };
     const pager = dayPager({
       day: day0, max: today0,
-      renderDay: (d, old) => dayPage(d, old, nav, dwgMod),
+      renderDay: (d, old) => dayPage(d, old, ctx),
       onChange: d => { if (d === dayKey(Date.now())) delete params.day; else params.day = d; paintStart(d); },   // 넘기는 중에 온다 — pager.day() 는 아직 앞 날짜
+      onDrop: (d, el) => { try { el?._ro?.destroy(); } catch { /* 무시 */ } },   // 캐시에서 빠진 페이지의 끌기 걷기
     });
+    ctx.refresh = d => { if (!dead) pager.refresh(d); };
     mounted = { pager };
+    const curPage = () => pager.el.querySelector(`.dpg-page[data-day="${pager.day()}"] > .home-page`);
+    // 떠날 때 보던 자리(묶음 상세·촬영에 다녀오면 다시 mount 된다 — router 가 같은 params 를 쥔다)
+    function saveScroll() {
+      try {
+        const el = curPage(), w = el?.parentElement;
+        if (!w || w.hidden) return;
+        params.scroll = { day: pager.day(), top: Math.round(w.scrollTop), end: atEnd(el), n: el._n ?? 0 };
+      } catch { /* 그만 */ }
+    }
 
     // dock
     const startSub = h('span', { class: 'start-sub' });
@@ -264,6 +364,8 @@ export default {
 
     function render() {
       if (dead) return;
+      const ro = curPage()?._ro;
+      if (ro && ro.state() !== 'idle') { ro.afterDrag(schedule); return; }   // 길게 누르는 중·끄는 중에 다시 그리면 들지 못하거나 끌기가 취소된다 — 뗀 뒤 한 번
       const now = Date.now(), today = dayKey(now);
       paintTop(now);
       // 날짜 페이지 — 자정을 넘기면 「오늘」을 바꾼다. 현재 페이지는 바로(바뀐 줄만), 이웃은 한 박자 뒤, 나머지 캐시는 다음에 보일 때
@@ -298,7 +400,7 @@ export default {
       import('../../data/drawings.js').then(async m => {
         await m.ready?.();
         if (dead) return;
-        dwgMod = m;
+        dwgMod = m; ctx.M = m;
         try { offDwg = m.onDrawings?.(() => { if (!dead) { renderDrawings(); schedule(); } }); } catch { /* 무시 */ }
         renderDrawings();
         pager.refresh();                                          // 위치도 구역을 채운다(핀이 없으면 그대로 숨김)
@@ -306,6 +408,7 @@ export default {
     });
 
     return () => {
+      saveScroll();
       dead = true;
       if (mounted?.pager === pager) mounted = null;
       schedule.cancel?.();

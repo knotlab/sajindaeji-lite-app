@@ -52,3 +52,6 @@
 .rec-place-map{position:relative;flex:1 1 auto;min-height:240px;contain:strict;display:flex;flex-direction:column;border:1px solid var(--soft);border-radius:var(--r-sm,8px);overflow:hidden}
 .rec-place-map>*{flex:1 1 auto;min-height:0}
 .rec-place-body .sheet-actions>.secondary{flex:1 1 auto}
+/* v0.1.7 사진 순서 — 처음 한 번 안내(격자 바로 위 보조 글 한 줄), 1번 배지 「1 대표」는 .rec-no 그대로(글이 길어지면 폭만 늘어남) */
+.rec-hint{margin:12px 0 0;font-size:14px;font-weight:600;line-height:1.4;color:var(--ink2)}
+.rec-hint + .rec-grid{margin-top:8px}

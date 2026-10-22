@@ -8,6 +8,10 @@
 //               { id, part:'preview', blob }(사진 줄 칸) → { id, part:'full', blob, w, h }(원본 = incoming·갤러리 원본)
 //               → 마지막 응답 { work, thumb, w, h, tw, th, ms }(작업본은 full canvas 에서 줄인다 — 다시 디코드하지 않는다)
 //   op 'encode': 다 그린 그림(ImageBitmap, 넘겨받음)을 JPEG 로만 → { blob, w, h, ms } — 내보내기·카톡 보내기 굽기(워터마크는 메인에서 그리고 인코딩만 여기서, v0.1.5)
+//               sizes 를 주면(v0.1.7) 크기 여러 벌을 한 번에 → { blobs: [Blob], dims: [{ w, h }], ms } (sizes 순서).
+//               sizes = [{ max, q }] — max 0 = 원래 크기, 원래보다 키우지 않는다. 그림 대신 JPEG blob(+ 알면 w0·h0)을 주면 여기서 푼다
+//               (가장 큰 요청 크기로 줄이며 디코드). blob 입력에서 원래 크기 그대로인 칸은 다시 인코딩하지 않고 받은 blob 을 돌려준다(바이트 같음)
+//               — 사진대지 칸(1000px)·대장 대표 사진(480px) 줄이기: 0.1.6 까지 메인 toDataURL 이 엑셀 만들기 긴 작업의 83% 였다
 //   op 'ping' : { ok: true } (OffscreenCanvas 가 없으면 ok:false code:'NO_OFFSCREEN')
 'use strict';
 
@@ -116,6 +120,7 @@ async function frame(m) {
 }
 
 async function encode(m) {
+  if (Array.isArray(m.sizes) && m.sizes.length) return encodeSet(m);
   const t0 = performance.now();
   const bmp = m.bitmap;
   if (!bmp?.width || !bmp?.height) throw Object.assign(new Error('빈 그림'), { code: 'NO_FRAME' });
@@ -124,6 +129,38 @@ async function encode(m) {
     c.getContext('2d').drawImage(bmp, 0, 0);
     bmp.close();
     return { blob: await jpeg(c, m.q || 0.85), w: c.width, h: c.height, ms: Math.round(performance.now() - t0) };
+  } finally { try { bmp.close(); } catch { /* 이미 닫힘 */ } }
+}
+
+// 크기 여러 벌(v0.1.7) — 칸마다 원본(그림)에서 바로 줄인다(작은 칸을 큰 칸에서 다시 줄이지 않음 — 두 번 흐려지지 않게)
+async function encodeSet(m) {
+  const t0 = performance.now();
+  const sizes = m.sizes.map(s => ({ max: s && s.max > 0 ? Math.round(s.max) : 0, q: (s && s.q) || 0.85 }));
+  const fromBlob = !m.bitmap;
+  let bmp = m.bitmap || null, W = 0, H = 0;
+  if (bmp) { W = bmp.width; H = bmp.height; }
+  else {
+    if (!(m.blob instanceof Blob) || !m.blob.size) throw Object.assign(new Error('빈 그림'), { code: 'NO_FRAME' });
+    const w0 = m.w0 > 0 ? m.w0 : 0, h0 = m.h0 > 0 ? m.h0 : 0;
+    const need = sizes.some(s => !s.max) ? 0 : Math.max(...sizes.map(s => s.max));
+    const d = await decode(m.blob, w0, h0, need && w0 && h0 ? Math.min(1, need / Math.max(w0, h0)) : 1);
+    bmp = d.bmp; W = d.W; H = d.H;
+  }
+  if (!W || !H) { try { bmp.close(); } catch { /* 이미 닫힘 */ } throw Object.assign(new Error('빈 그림'), { code: 'NO_FRAME' }); }
+  try {
+    const jobs = sizes.map(s => {
+      const k = s.max ? Math.min(1, s.max / Math.max(W, H)) : 1;
+      const w = Math.max(1, Math.round(W * k)), h = Math.max(1, Math.round(H * k));
+      if (fromBlob && k === 1) return { w, h, blob: m.blob };                        // 원래 크기 — 받은 JPEG 그대로
+      const c = new OffscreenCanvas(w, h);
+      const x = c.getContext('2d');
+      x.imageSmoothingQuality = 'high';
+      x.drawImage(bmp, 0, 0, w, h);
+      return { w, h, c, q: s.q };
+    });
+    bmp.close();
+    const blobs = await Promise.all(jobs.map(j => j.blob || jpeg(j.c, j.q)));
+    return { blobs, dims: jobs.map(j => ({ w: j.w, h: j.h })), ms: Math.round(performance.now() - t0) };
   } finally { try { bmp.close(); } catch { /* 이미 닫힘 */ } }
 }
 

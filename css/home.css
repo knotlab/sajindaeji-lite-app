@@ -57,3 +57,5 @@
 /* 숨은 날짜 입력(홈·날짜 화면 공용) */
 .f-date-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}
 .start .start-sub{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* v0.1.7 처음 한 번 안내(길게 눌러 끌기) — 목록 바로 아래 보조 글 한 줄(노랑·상자 없음) */
+.home-hint{margin:8px 4px 0;font-size:14px;font-weight:600;line-height:1.4;color:var(--ink2)}

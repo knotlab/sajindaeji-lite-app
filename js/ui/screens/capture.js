@@ -19,6 +19,7 @@ import { sharedStage } from '../widgets/sharedstage.js';
 import * as config from '../../config.js';
 import { watermarkLines, watermarkLayout, drawWatermark, wmOpts, wmFont } from '../../core/watermark.js';
 import { dayKey } from '../../core/date.js';
+import { prevContent } from '../../core/model.js';
 
 const RATIOS = ['4:3', '16:9', '3:4'];
 const RATIO_LABEL = { '4:3': '가로 4:3', '16:9': '가로 16:9', '3:4': '세로 3:4' };
@@ -746,7 +747,12 @@ function mount(root, params = {}, nav = {}) {
   }
 
   async function editContent() {
-    const v = await resting_(dom.textSheet({ title: '내용', value: content || '', placeholder: '내용을 적어요', multiline: true }));
+    // 「이전 내용」 단추(v0.1.7): 같은 날 사진대지 순서로 이 묶음 바로 앞쪽의 내용 있는 묶음 — 아직 만들지 않은 새 묶음이면 그 날 맨 끝부터.
+    // 칸이 빈 채로 열 때만 넘긴다(묶음 상세와 같은 규칙 — 글이 있는 칸을 지웠을 때 「이전 내용」이 지운 글 되돌리기로 읽히지 않게).
+    // 계산은 그 날 묶음 한 번 훑기(동기, 시트를 열기 전 — 포커스·키보드는 그대로 탭 안에서)
+    const rec = live(recId), day = rec?.day || fixedDay || dayKey(Date.now());
+    const prevText = (content || '').trim() ? null : safe(() => prevContent(store.recordsOfDay(day), rec?.id ?? null), null);
+    const v = await resting_(dom.textSheet({ title: '내용', value: content || '', placeholder: '내용을 적어요', multiline: true, prev: prevText ? { text: prevText } : null }));
     if (v == null || dead) return;
     const text = String(v).trim();
     content = text;

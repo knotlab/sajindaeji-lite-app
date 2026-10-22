@@ -1,93 +1,133 @@
-/* 내보내기 탭 exporthub(v0.1.5) — 접두어 xh-. 크기 기준은 CLAUDE.md 사용성 표:
-   본문 16 · 보조 14 · 목록 제목 16 굵게, 칩 44, 보조 버튼 48, 하단 주 버튼 56(노랑은 [카톡으로 보내기] 하나),
-   검정 2px 는 주 버튼·선택된 칩·체크된 칸에만, 목록은 흰 바탕 + 1px 연한 선. 아래 고정 칸은 탭 막대 위(#view 밖에 탭 막대가 있으면 저절로). */
+/* 내보내기 탭 exporthub(앱 0.1.7 「한번에 보내기」) — 접두어 xh-. 크기 기준은 CLAUDE.md 사용성 표:
+   본문 16 · 보조 14 · 꼬리표 13, 칩 44(누름 자리 48), 카드 줄 48 · 순서표 줄 44, 목록 줄 64, 하단 주 버튼 56(노랑은 이것 하나),
+   검정 2px 는 주 버튼·고른 칩·켠 칸·고른 줄에만, 카드·목록은 흰 바탕 + 1px 연한 선. 아래 고정 칸은 탭 막대 위.
+   넘침 0(360 폭): 아래 고정 칸·진행 줄·글은 모두 min-width:0 + 한 줄 말줄임(0.1.6 고장 1 — 진행 글이 칸 폭을 밀어 6px 넘쳤다). */
 
 .xh-scr .bar{margin-bottom:0}
 .xh-chips{margin-top:0;margin-bottom:8px}
 .xh-chip .ic{margin-left:-2px}
-.xh-scr .f-date-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}   /* 숨은 날짜 칸(home.css 와 같게 — 이 파일만으로도 숨게) */
+.xh-chip:disabled,.xh-quick:disabled{opacity:.5}
+.xh-scr .f-date-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}   /* 숨은 날짜 칸(home.css 와 같게) */
 
-/* 기간 — 시작 ~ 끝 */
-.xh-period{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+/* 글자 단추 — 보이는 높이 44, 누름 자리 48(위아래 2px 더) */
+.xh-tbtn{position:relative;flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 10px;border-radius:8px;
+  font-size:14px;font-weight:800;color:var(--ink);text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.xh-tbtn::after{content:"";position:absolute;left:0;right:0;top:-2px;bottom:-2px}
+.xh-tbtn:active{background:rgba(0,0,0,.08)}
+.xh-tbtn:disabled{opacity:.45;text-decoration:none}
+
+/* 기간 — 시작 ~ 끝 + 빠른 칩 */
+.xh-period{display:grid;gap:8px;margin-bottom:8px}
+.xh-dates{display:flex;align-items:center;gap:8px}
 .xh-date{flex:1 1 0;min-width:0;min-height:48px;padding:0 10px}
 .xh-tilde{flex:none;font-weight:800;color:var(--ink2)}
+.xh-quicks{display:flex;gap:8px}
+.xh-quick{position:relative;flex:1 1 0;min-width:0;padding:0 8px}
+.xh-quick::after{content:"";position:absolute;left:0;right:0;top:-2px;bottom:-2px}
 
-/* 목록 머리: 「10/22(목) · 묶음 4 · 사진 9」 + [모두 해제] */
-.xh-sec{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;margin:8px 0 4px}
-.xh-sum{min-width:0;font-size:14px;font-weight:800;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 고르기 머리(folderbar selection 의 머리만 — 아래 고정이 아니라 칩 줄 자리에) */
+.xh-scr .xh-selbar{position:static;margin:0 -16px 8px;padding:0 8px 0 16px;border-top:0;border-bottom:1px solid var(--soft);box-shadow:none;min-height:56px;align-content:center}
+.xh-selbar .fb-selbtns{display:none}
+.xh-selbar .fb-selhead{min-height:48px}
+.xh-selbar .fb-selhead .textbtn{min-height:48px}
+
+/* 카드 하나 — 보낼 것 / 보내는 순서 / 다 보냈어요 / 보내다 멈췄어요 */
+.xh-card{margin-bottom:8px;border:1px solid var(--soft);border-radius:var(--r);background:var(--paper);overflow:hidden}
+.xh-kind{display:flex;align-items:center;gap:12px;width:100%;min-height:48px;padding:0 12px;border-top:1px solid var(--soft);text-align:left;color:var(--ink)}
+.xh-kind:first-child{border-top:0}
+.xh-kind:active{background:#F1F2EF}
+.xh-kind:disabled{opacity:.5}
+.xh-box{flex:none;display:grid;place-items:center;width:24px;height:24px;border-radius:6px;border:1px solid var(--line);background:var(--paper);color:transparent}
+.xh-kind[aria-checked="true"] .xh-box{background:#000;border:2px solid #000;color:#fff}
+.xh-kind[aria-checked="true"] .xh-box .ic{stroke-width:3}
+.xh-kind-t{flex:none;font-size:16px;font-weight:800}
+.xh-kind-s{flex:1;min-width:0;text-align:right;font-size:14px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.xh-kind[aria-checked="false"] .xh-kind-t{color:var(--ink2);font-weight:700}
+
+/* 순서표(보내는 중) — 줄 44, 지금 차례만 굵게 */
+.xh-step{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 4px 0 12px;border-top:1px solid var(--soft)}
+.xh-step:first-child{border-top:0}
+.xh-step-t{flex:1;min-width:0;font-size:14px;font-weight:600;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.xh-step-t.cur{font-weight:800;color:var(--ink)}
+.xh-step[data-state="fail"] .xh-step-t{color:var(--fail);font-weight:800}
+.xh-mark{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;border:2px solid var(--line);font-size:13px;font-weight:900;line-height:1}
+.xh-mark.done{background:#000;border-color:#000;color:#fff}
+.xh-mark.done .ic{stroke-width:3}
+.xh-mark.cur{border-color:#000;background:radial-gradient(circle,#000 0 4px,transparent 4.5px)}
+.xh-mark.fail{background:var(--fail);border-color:var(--fail);color:#fff}
+.xh-mark.skip{border-style:dashed;color:var(--ink2)}
+.xh-mini{flex:0 0 48px;height:6px;border-radius:3px;background:var(--concrete);overflow:hidden}
+.xh-mini > i{display:block;height:100%;background:#000;transform-origin:0 50%;transition:transform var(--dur)}
+.xh-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* 다 보냈어요 · 보내다 멈췄어요 */
+.xh-done,.xh-resume{display:flex;align-items:center;gap:12px;min-height:56px;padding:6px 4px 6px 12px}
+.xh-done .xh-mark{width:28px;height:28px;background:var(--pass);border-color:var(--pass)}
+.xh-resume .xh-mark{width:28px;height:28px;font-size:16px}
+.xh-card-t{flex:1;min-width:0;display:grid}
+.xh-card-t b{font-size:16px;font-weight:800;line-height:1.3}
+.xh-card-t small{font-size:14px;font-weight:700;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xh-over{margin:0 0 8px}
-.xh-all{flex:none;min-height:44px;padding:0 10px;margin-right:-10px;border-radius:8px;font-size:15px;font-weight:800;color:var(--ink);
-  text-decoration:underline;text-underline-offset:3px}
-.xh-all:active{background:rgba(0,0,0,.08)}
+.xh-emptynote{margin:8px 0 0}                                   /* 보낼 것이 없는 묶음 n개는 뺐어요(목록 아래 한 줄) */
 
-/* 묶음 줄 — 줄 전체가 체크 */
+/* 목록 머리: 「보낼 묶음 4」 [고르기] · 「보낸 묶음 6 · 카톡 11:40」 [펼치기] */
+.xh-sec{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;margin:4px 0 0}
+.xh-sec-t{min-width:0;font-size:14px;font-weight:800;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-sec .xh-tbtn{margin-right:-10px}
 .xh-list{margin-bottom:8px}
-.xh-row{display:flex;align-items:flex-start;gap:12px;width:100%;min-height:56px;padding:12px 16px 12px 12px;border-top:1px solid var(--soft);
-  background:var(--paper);text-align:left;color:var(--ink);transition:opacity var(--dur)}
+
+/* 묶음 줄 64 — 시각·사진 수 | 위치(16 굵게)·꼬리표·내용(14 한 줄) | 썸네일 64×48 */
+.xh-row{position:relative;display:flex;align-items:center;gap:10px;width:100%;min-height:64px;padding:8px 12px;border-top:1px solid var(--soft);
+  background:var(--paper);text-align:left;color:var(--ink);-webkit-touch-callout:none}
 .xh-list > :first-child{border-top:0}
 .xh-row:active{background:#F1F2EF}
-.xh-check{flex:none;display:grid;place-items:center;width:24px;height:24px;margin-top:0;border-radius:6px;border:2px solid var(--line);background:var(--paper);color:transparent}
-.xh-row[aria-checked="true"] .xh-check{background:#000;border-color:#000;color:#fff}
-.xh-row[aria-checked="true"] .xh-check .ic{stroke-width:3}
-.xh-row[aria-checked="false"] .xh-body{opacity:.55}            /* 뺀 묶음 — 체크 모양(빈 칸)으로도 알 수 있다 */
+.xh-row.fb-picked{background:#F1F2EF}
+.xh-row > .fb-check{width:24px;height:24px;border-radius:6px}                 /* 고르는 중 체크 24 — 고른 것만 검정 채움(folders.css) */
+.xh-when{flex:0 0 40px;display:grid;gap:2px;font-variant-numeric:tabular-nums}
+.xh-when b{font-size:14px;font-weight:800;line-height:1.2}
+.xh-when small{font-size:13px;font-weight:700;color:var(--ink2);line-height:1.2}
 .xh-body{flex:1;min-width:0;display:grid;gap:2px}
-.xh-head{display:flex;align-items:baseline;gap:8px}
-.xh-loc{flex:1;min-width:0;font-size:16px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-loc{font-size:16px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xh-loc.muted{color:var(--ink2);font-weight:700}
-.xh-meta{flex:none;font-size:14px;font-weight:700;color:var(--ink2);font-variant-numeric:tabular-nums}
-.xh-content{font-size:14px;color:var(--ink2);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.xh-thumbs{display:grid;grid-template-columns:repeat(3,64px) auto;gap:4px;margin-top:4px;align-items:center;justify-content:start}
-.xh-thumbs .thumb-box{border-radius:4px}
+.xh-line{display:flex;align-items:center;gap:6px;min-width:0;line-height:1.4}
+.xh-content{flex:1;min-width:0;font-size:14px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-tag{flex:none;display:inline-flex;align-items:center;height:20px;padding:0 6px;border:1px solid var(--line);border-radius:5px;
+  font-size:13px;font-weight:800;color:var(--ink2);background:var(--paper);white-space:nowrap}
+.xh-tag-more{border-color:#000;color:#000}
+.xh-tag > .ic{margin-right:2px;stroke-width:3}                                   /* 「✓ 카톡 11:40」의 ✓ — 글자 대신 아이콘(대체 글꼴을 부르지 않게) */
+.xh-tag-edited{border-color:#C9A000;background:var(--hivis-tint);color:#4A3B00}
+.xh-row .thumb-box{flex:0 0 64px;width:64px;border-radius:4px}
 .xh-th{border-radius:4px}
-.xh-more{display:grid;place-items:center;min-width:40px;height:48px;padding:0 6px;border-radius:4px;background:var(--concrete);font-size:14px;font-weight:800;color:var(--ink2)}
-.xh-dayhead{padding:8px 16px 6px;background:#F1F2EF;border-top:1px solid var(--soft);font-size:14px;font-weight:800;color:var(--ink2)}
-.xh-empty{padding:32px 16px;text-align:center;font-weight:700;color:var(--ink2)}
-
-/* 아래 고정 — 안내 · 진행 · 보조 두 개 · 주 버튼(맨 아래 = 엄지) */
-.xh-dock{gap:8px;padding-top:12px}
-.xh-subrow{gap:8px}
-.xh-subbtn{min-height:48px;padding:6px 8px;font-size:15px;gap:6px}
-.xh-subbtn .ic{color:var(--ink2)}
-.xh-send{min-height:56px;justify-content:center;gap:10px;padding:6px 16px;border-radius:14px}
-.xh-send-t{display:grid;justify-items:start;min-width:0;text-align:left}
-.xh-send-t b{font-size:18px;font-weight:900;line-height:1.2;letter-spacing:-.2px}
-.xh-send-s{max-width:100%;font-size:14px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
-/* 진행 — 막대 + 글 + [그만] */
-.xh-prog{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 4px 0 12px;border-radius:10px;background:var(--paper);border:1px solid var(--soft)}
-.xh-prog-bar{flex:0 0 64px;height:6px;border-radius:3px;background:var(--concrete);overflow:hidden}
-.xh-prog-fill{display:block;height:100%;width:0;background:#000;transition:width var(--dur)}
-.xh-prog-t{flex:1;min-width:0;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.xh-prog-stop{flex:none;min-width:48px;min-height:44px;padding:0 12px;border-radius:8px;font-size:15px;font-weight:800;color:var(--ink)}
-.xh-prog-stop:active{background:#F1F2EF}
-
-/* 보낸 뒤 안내 */
-.xh-notice{display:flex;align-items:center;gap:8px;min-height:52px;padding:4px 0 4px 12px;border-radius:10px;background:var(--paper);border:1px solid var(--soft)}
-.xh-notice-ic{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--pass);color:#fff}
-.xh-notice-ic .ic{stroke-width:3}
-.xh-notice.warn .xh-notice-ic{background:var(--fail)}
-.xh-notice-body{flex:1;min-width:0;display:grid}
-.xh-notice-t{font-size:15px;font-weight:800;line-height:1.3}
-.xh-notice-s{font-size:13px;font-weight:600;color:var(--ink2);line-height:1.3}
-.xh-notice-btn{flex:none;min-height:44px;padding:0 8px;border-radius:8px;font-size:14px;font-weight:800;color:var(--ink);text-decoration:underline;text-underline-offset:3px}
-.xh-notice-btn:active,.xh-notice-x:active{background:#F1F2EF}
-.xh-notice-x{flex:none;width:44px;height:44px;display:grid;place-items:center;border-radius:8px;color:var(--ink2)}
-
-/* 엑셀 결과 시트 */
-.xh-file{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--soft);border-radius:var(--r)}
-.xh-file .ic{color:var(--ink2)}
-.xh-file-t{flex:1;min-width:0;display:grid}
-.xh-file-t b{font-size:16px;font-weight:800;overflow-wrap:anywhere}
-.xh-file-t small{font-size:14px;color:var(--ink2)}
-.xh-result-btns > .secondary{flex:0 0 40%}
-
-@media (max-width:370px){
-  .xh-subbtn{font-size:14px;padding:6px 6px;gap:4px}
-  .xh-thumbs{grid-template-columns:repeat(3,56px) auto}
-  .xh-more{height:42px}
-}
-/* 빈 날 안내 + [그 날 보기](보조 48px) */
-.xh-empty{display:flex;flex-direction:column;align-items:center;gap:12px}
+.xh-th-none{display:block;flex:0 0 64px;height:48px;border-radius:4px;background:var(--concrete)}
+.xh-dayhead{padding:8px 12px 6px;background:#F1F2EF;border-top:1px solid var(--soft);font-size:14px;font-weight:800;color:var(--ink2)}
+.xh-empty{display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px 16px;text-align:center;font-weight:700;color:var(--ink2)}
 .xh-empty[hidden]{display:none}
 .xh-empty-go{min-height:48px;padding:0 20px;width:auto}
 .xh-empty-go[hidden]{display:none}
+
+/* 아래 고정 — 진행 줄(44) + 주 버튼(56). 칸 폭은 화면 폭을 넘지 않는다 */
+.xh-dock{grid-template-columns:minmax(0,1fr);gap:8px;padding-top:12px}
+.xh-dock > *{min-width:0}
+.xh-run{position:relative;display:flex;align-items:center;gap:8px;min-width:0;min-height:44px;padding:0 4px 0 12px;border-radius:10px;
+  background:var(--paper);border:1px solid var(--soft);overflow:hidden}
+.xh-run.warn{border:2px solid #C9A000;background:var(--hivis-tint);padding-left:11px}
+.xh-run-t{flex:1;min-width:0;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-run.warn .xh-run-t{color:#4A3B00;font-weight:800}
+/* 2초 막대 — 줄 아래 4px, 전환 한 번(transform)으로 */
+.xh-auto{position:absolute;left:0;right:0;bottom:0;height:4px;background:var(--concrete)}
+.xh-auto-fill{display:block;height:100%;background:#000;transform:scaleX(0);transform-origin:0 50%}
+.xh-send{min-height:56px;justify-content:center;gap:10px;padding:6px 16px;border-radius:14px}
+.xh-send-t{display:grid;justify-items:start;min-width:0;text-align:left}
+.xh-send-l{max-width:100%;font-size:18px;font-weight:900;line-height:1.2;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-send-s{max-width:100%;font-size:14px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-again{min-height:48px}
+
+/* 보낼 글 시트 */
+.xh-pre{margin:0 0 12px;max-height:40vh;overflow:auto;padding:12px;border:1px solid var(--soft);border-radius:10px;background:#F7F8F6;
+  font:inherit;font-size:15px;line-height:1.5;white-space:pre-wrap;word-break:keep-all;overflow-wrap:anywhere}
+
+@media (max-width:370px){
+  .xh-row{gap:8px;padding:8px 10px}
+  .xh-kind{gap:10px}
+}
+@media (prefers-reduced-motion:reduce){.xh-auto{display:none}}                 /* 움직임 줄이기 — 막대 없이 글(「2초 뒤 열어요」)만 */

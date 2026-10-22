@@ -1,20 +1,21 @@
-// 순서 계산(DOM 없음 — node 테스트 tests/unit/order.test.mjs). v0.1.6 사용자 요구 「목록 순서같은거 드래그앤드롭으로 이동시킬 수 있게」.
-// 끌어 옮기기(widgets/reorder.js)·메뉴 [위로]·[아래로]·백업 합치기가 같은 규칙을 쓴다.
+// 순서 계산(DOM 없음 — node 테스트 tests/unit/order.test.mjs). 사용자 요구 「목록 순서같은거 드래그앤드롭으로 이동시킬 수 있게」(앱 0.1.7).
+// 끌어 옮기기(widgets/reorder.js)·키 [위로]·[아래로]·저장소(store.reorderRecords·reorderPhotos·merge)가 같은 규칙을 쓴다.
+// 묶음 목록은 어디서나 사진대지 순서(위가 먼저 — 홈·내보내기·사진대지·대장·카톡 글·위치도, 결정 1 A안).
 //
 // 두 갈래
-//  ① 배열 순서 — 한 레코드가 순서를 통째로 들고 있을 때(묶음 안 사진 record.photoIds — 순서 = 사진 번호, 지운 사진 id 도 남아 있다)
+//  ① 배열 순서 — 한 레코드가 순서를 통째로 들고 있을 때(묶음 안 사진 record.photoIds — 순서 = 사진 번호·1번이 대표, 지운 사진 id 도 남아 있다)
 //       move(arr, from, to) · moveVisible(full, visible, from, to) · reorderTo(full, visibleOrder) · mergeIds(winner, loser)
-//  ② 순서 값 — 항목마다 따로 저장될 때(그 날 묶음들, 자료함·도면보관함 줄)
-//       orderOf · compareOrder · sortByOrder · between · planMove · renumber · normalize · withOrder
+//  ② 순서 값 — 항목마다 따로 저장될 때(그 날 묶음들 record.order)
+//       orderOf · compareOrder · compareByDay · sortByOrder · nextOrder · planOrder · between · planMove · renumber · normalize · withOrder
 //
 // 순서 값을 「정수 자리(0,1,2…)」가 아니라 「분수 위치(숫자), 없으면 만든 시각(ms)」으로 하는 까닭
 //  - 옮긴 항목 하나만 쓴다. 정수 자리는 맨 아래를 맨 위로 올리면 그 사이 n개를 모두 다시 쓴다 → 묶음마다 rev+1,
 //    APK 미러 파일(mirror/r-<id>.json — 브리지) n번, 백업 합치기에서 rev 다툼 n개(다른 기기에서 고친 글이 순서 때문에 질 수 있다).
 //  - 옮기지 않은 항목은 순서 칸이 없어도 된다(기본값 = createdAt) → 0.1.5 기록은 고치지 않고(이주 없음) 지금 순서 그대로,
-//    새로 만든 묶음은 저절로 맨 뒤(= 홈 「최신이 위」의 맨 위). 맨 뒤로 옮길 때는 now 를 써서 그 뒤에 만드는 것이 계속 뒤에 오게 한다.
+//    새로 만든 묶음은 nextOrder 로 늘 그 날 맨 끝(값이 지금 시각과 같으면 칸을 쓰지 않는다 — 쓸 때만 키).
 //  - 거르기(찾기·칩)로 일부만 보일 때도, 보이는 이웃 둘 사이 값을 주면 전체 순서에서도 그 사이로 간다(숨은 것은 제자리).
-//  - 숫자라 비교가 빠르고 JSON·백업에 그대로 실린다(옛 앱은 모르는 칸이라 무시 — 만든 시각 순으로 보인다).
-//  한계: 같은 틈을 계속 반으로 나누면(1초 틈이면 약 20번) 자리가 모자란다 → planMove 가 그 목록을 다시 매긴다(renumber — 드묾, 양 끝 값은 그대로).
+//  - 숫자라 비교가 빠르고 JSON·백업·미러에 그대로 실린다(옛 앱은 모르는 칸이라 무시 — 만든 시각 순으로 보인다).
+//  한계: 같은 틈을 계속 반으로 나누면(1초 틈이면 약 20번) 자리가 모자란다 → planOrder·planMove 가 그 목록을 다시 매긴다(renumber — 드묾, 양 끝 값은 그대로).
 //  정수 자리를 쓰기로 하면 renumber(list, { start: 0, step: 1 }) 가 바뀐 것만 돌려준다.
 //
 // 바뀐 것은 늘 [{ id, order }] 로 돌려준다(저장소가 이것만 쓰면 된다). order 가 null 이면 「순서 칸을 지워 기본(만든 시각)으로」.
@@ -113,6 +114,73 @@ export function compareOrder(a, b, opts = {}) {
 }
 export const sortByOrder = (list, opts = {}) => [...(Array.isArray(list) ? list : [])].sort((a, b) => compareOrder(a, b, opts));
 
+// 여러 날 — 날짜(YYYY-MM-DD) 오름차순 → 하루 안 순서(compareOrder). 사진대지·대장·카톡 글·위치도·내보내기 목록이 같이 쓴다
+export function compareByDay(a, b, opts = {}) {
+  const da = String(a?.day ?? ''), db = String(b?.day ?? '');
+  if (da !== db) return da < db ? -1 : 1;
+  return compareOrder(a, b, opts);
+}
+
+// 새 항목의 순서 값 — 그 날 맨 끝. dayItems 는 그 날 항목 전부(휴지통 것도 — 되살려도 새 묶음이 그 뒤).
+// 보통은 now 그대로(= 만든 시각이라 칸을 쓸 필요가 없다). 누가 끝으로 옮겼거나 시계가 뒤로 갔으면 가장 큰 값 + 1
+export function nextOrder(dayItems, now = Date.now(), opts = {}) {
+  let m = isNum(now) ? now : 0;
+  for (const x of Array.isArray(dayItems) ? dayItems : []) { const v = orderOf(x, opts) + 1; if (v > m) m = v; }
+  return m;
+}
+
+// 가장 긴 증가 부분열(인덱스) — 자리를 지킬 항목. keys 는 서로 다른 수(지금 순서의 등수)
+function lisIdx(keys) {
+  const tails = [], prev = new Array(keys.length).fill(-1);
+  for (let i = 0; i < keys.length; i++) {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (keys[tails[m]] < keys[i]) lo = m + 1; else hi = m; }
+    if (lo > 0) prev[i] = tails[lo - 1];
+    tails[lo] = i;
+  }
+  const out = [];
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) out.push(i);
+  return out.reverse();
+}
+
+// 원하는 순서로 — 지금 순서에서 가장 긴 증가 부분열(LIS)은 그대로 두고 나머지만 이웃 사이 값을 준다(하나 옮기면 보통 하나만 쓴다).
+//   list: 지금 항목들(배열 순서는 상관없음), wantIds: 원하는 id 순서(화면 순서 그대로).
+//   list 에 없는·겹친 id 는 무시, wantIds 에 없는 항목은 건드리지 않는다(끄는 사이 새로 들어온 묶음 등 — 제 값 그대로).
+//   맨 앞·맨 뒤는 이웃 값 ∓ gap. 틈이 minGap 보다 좁거나 반영해 보아 순서가 다르면(같은 값 사이 등) wantIds 순서대로 다시 매긴다(renumbered).
+// → { changes: [{ id, order }], order: id[](wantIds 중 쓴 것, 그 순서), renumbered }
+export function planOrder(list, wantIds, { gap = RENUMBER_STEP, minGap = MIN_GAP, idOf = defId, field = FIELD, base = 'createdAt' } = {}) {
+  const oo = { field, base };
+  const byId = new Map();
+  for (const x of Array.isArray(list) ? list : []) { const id = idOf(x); if (id != null && !byId.has(id)) byId.set(id, x); }
+  const seen = new Set(), D = [];
+  for (const id of Array.isArray(wantIds) ? wantIds : []) if (byId.has(id) && !seen.has(id)) { seen.add(id); D.push(byId.get(id)); }
+  const ids = D.map(idOf);
+  if (D.length < 2) return { changes: [], order: ids, renumbered: false };
+  // 지금 순서의 등수(값이 같아도 만든 시각·번호·id 로 갈린다) → 그 등수가 증가하는 가장 긴 줄 = 자리를 지킬 항목
+  const rank = new Map(sortByOrder(D, oo).map((x, i) => [x, i]));
+  const A = lisIdx(D.map(x => rank.get(x)));
+  const k = D.map(x => orderOf(x, oo)), nk = k.slice();
+  let ok = true;
+  const fill = (from, to, lo, hi) => {                       // D[from..to) 를 (lo, hi) 사이에 고르게
+    const m = to - from;
+    if (m <= 0) return;
+    if (lo == null) { for (let j = 0; j < m; j++) nk[from + j] = hi - gap * (m - j); return; }
+    if (hi == null) { for (let j = 0; j < m; j++) nk[from + j] = lo + gap * (j + 1); return; }
+    const step = (hi - lo) / (m + 1);
+    if (!(step > minGap)) { ok = false; return; }
+    for (let j = 0; j < m; j++) nk[from + j] = lo + step * (j + 1);
+  };
+  fill(0, A[0], null, k[A[0]]);
+  for (let t = 0; t + 1 < A.length; t++) fill(A[t] + 1, A[t + 1], k[A[t]], k[A[t + 1]]);
+  fill(A[A.length - 1] + 1, D.length, k[A[A.length - 1]], null);
+  // 확인: 새 값으로 줄 세우면 정확히 원하는 순서인가(부동소수·같은 값)
+  const sorted = () => sortByOrder(D.map((x, i) => ({ ...x, [field]: nk[i] })), oo).every((x, i) => idOf(x) === ids[i]);
+  if (!ok || !sorted()) return { changes: renumber(D, { idOf, field, base, minStep: gap }), order: ids, renumbered: true };
+  const changes = [];
+  for (let i = 0; i < D.length; i++) if (nk[i] !== k[i]) changes.push({ id: ids[i], order: nk[i] });
+  return { changes, order: ids, renumbered: false };
+}
+
 // a < x < b 인 값. a 가 null 이면 맨 앞(b - step), b 가 null 이면 맨 뒤(now 를 주면 max(a + 1, now) — 그 뒤에 만드는 항목은 기본값이
 // 만든 시각이라 계속 뒤에 온다. now 는 기본값이 만든 시각일 때만 준다). 자리가 없으면(같은 값·뒤집힘·부동소수 한계) null
 export function between(a, b, { now = null, step = STEP } = {}) {
@@ -127,7 +195,8 @@ export function between(a, b, { now = null, step = STEP } = {}) {
 
 // 한 항목 옮기기 → { id, order, changes, renumbered }
 //   list: 지금 순서의 항목들(오름차순 — 작은 값이 앞). from → to(옮긴 뒤 자리). changes 를 저장하면 끝(보통 옮긴 것 하나).
-//   desc: true 면 list·from·to 가 화면 순서이고 화면은 큰 값이 위(홈 「최신이 위」) — 안에서 뒤집어 계산한다.
+//   desc: true 면 list·from·to 가 화면 순서이고 화면은 큰 값이 위(거꾸로 보이는 목록 — 지금 묶음 목록은 모두 사진대지 순서라 안 씀) — 안에서 뒤집어 계산한다.
+//   (묶음 하루 순서는 화면 순서 id 를 통째로 주는 planOrder 를 쓴다 — 끄는 사이 목록이 바뀌어도 안전)
 //   거른 목록(찾기 결과 등)을 넘겨도 된다 — 보이는 이웃 사이 값이 되어 숨은 항목은 제자리.
 //   자리가 없으면 옮긴 순서대로 list 를 다시 매긴다(renumbered: true, changes 여러 개).
 export function planMove(list, from, to, { desc = false, now = null, step = STEP, idOf = defId, field = FIELD, base = 'createdAt', minStep = RENUMBER_STEP } = {}) {

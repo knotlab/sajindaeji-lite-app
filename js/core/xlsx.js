@@ -122,7 +122,7 @@ const CT_DR = 'application/vnd.openxmlformats-officedocument.drawing+xml';
 const colName = (i) => String.fromCharCode(65 + i);
 const inl = (ref, s, v) => '<c r="' + ref + '" s="' + s + '" t="inlineStr"><is><t xml:space="preserve">' + esc(cellText(v)) + '</t></is></c>';
 
-// 대장 시트 머리·열 너비를 spec 으로 다시 쓴다 — 틀의 12열(원본 앱 것) 대신 lite 9열
+// 대장 시트 머리·열 너비를 spec 으로 다시 쓴다 — 틀의 12열(원본 앱 것) 대신 lite 열(core/ledger.js LEDGER — v0.1.7 순번·관리번호 등 10열)
 function ledgerFrame(xml, spec, headStyle, headHeight, lastRow) {
   const cols = '<cols>' + spec.widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join('') + '</cols>';
   const head = '<row r="1" ht="' + headHeight + '" customHeight="1">' + spec.head.map((t, i) => inl(colName(i) + '1', headStyle, t)).join('') + '</row>';

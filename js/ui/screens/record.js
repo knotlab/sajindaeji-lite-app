@@ -1,6 +1,11 @@
 // 묶음 상세 `record`(설계서 §6.3) — params { id }
 // 위치·내용 고치기(자유 입력 시트), 정보 줄, 사진 격자(4:3, 2열 기본·많으면 3열) → 크게 보기,
 // [사진 더 찍기]·[갤러리에서 추가]·[묶음 삭제](소프트 삭제 + 5초 되돌리기).
+// 사진 순서(v0.1.7): 칸을 길게 눌러(450ms) 끌면 순서가 바뀐다(widgets/reorder.js → store.reorderPhotos) + 5초 [되돌리기].
+//   순서 = 사진 번호, 1번이 대표 사진(홈 줄 첫 썸네일·대장 대표 사진) — 사진이 2장 이상이면 1번 배지에 「대표」.
+//   끄는 동안 번호 배지가 놓일 자리대로 미리 바뀐다. 칸은 다시 만들지 않는다(번호·읽어 줄 이름만 그 자리에서 — 썸네일이 깜빡이지 않게).
+//   처음 한 번만 안내 한 줄(사진 2장 이상 — 한 번 끌거나 3번 보였거나 3일 지나면 다시 안 보임, meta hintDragPhoto).
+// 내용 고치기는 칸이 비었으면 「이전 내용」 단추(같은 날 사진대지 순서로 바로 앞쪽 가장 가까운 내용 — core/model.js prevContent, dom.textSheet prev).
 // 도면 위치(rec-pin, docs/도면보관함-설계.md §5.7): 핀이 있으면 미니 위치도(이 핀 진하게, 그 날 같은 도면의 다른 핀은 흐리게) + 핀 이름 고치기
 //   + [도면에서 보기](drawview { id, pinId }) + [핀 지우기](5초 되돌리기). 핀이 없으면 [도면에 위치 찍기](도면 고르기 → 찍기 시트).
 //   핀은 도면보관함(data/drawings.js) 한 곳에만 있고, 묶음에는 record.pin = { drawingId, pinId } 만. 도면 모듈·위젯이 없으면 이 칸은 조용히 빠진다.
@@ -9,11 +14,25 @@ import * as dom from '../dom.js';
 import * as store from '../../data/store.js';
 import * as pipeline from '../../media/pipeline.js';
 import * as thumbW from '../widgets/thumb.js';
+import { reorderable } from '../widgets/reorder.js';
 import { dayLabel, hm, dayKey } from '../../core/date.js';
 import * as geo from '../../core/geo.js';
+import * as model from '../../core/model.js';                  // prevContent(이전 내용 — 담당 1)는 있을 때만 쓴다(이름으로 꺼내면 없을 때 화면이 안 뜬다)
 
 const { h, icon } = dom;
 const toast = (t, ms) => dom.toast?.(t, ms);
+const LONG_MS = 450;                                           // 길게 눌러 들기(홈 묶음 줄·폴더 고르기와 같은 시간)
+const HINT_KEY = 'hintDragPhoto';                              // 처음 한 번 안내 — 끌었거나 3번 보였거나 3일 지나면 다시 안 띄운다
+const HINT_SHOWS = 3, HINT_DAYS = 3;
+// 끌기 안내를 아직 띄울까 — meta 값: 없음(처음) | 숫자(끈 시각 — 끝) | { n: 보인 화면 수, at: 처음 본 시각 }(홈 hintDragRecord 도 같은 규칙)
+export function hintLive(v, now = Date.now()) {
+  if (v == null) return true;
+  if (typeof v !== 'object') return false;
+  return (Number(v.n) || 0) < HINT_SHOWS && !(now - (Number(v.at) || now) > HINT_DAYS * 864e5);
+}
+// 번호 배지 글·읽어 줄 이름 — i 는 0부터, n = 사진 수. 1번이 대표(2장 이상일 때만 글자로)
+export const photoBadge = (i, n) => (i === 0 && n > 1 ? '1 대표' : String(i + 1));
+const photoLabel = (i, n) => (i === 0 && n > 1 ? '사진 1(대표) 크게 보기' : `사진 ${i + 1} 크게 보기`);
 
 // 파일 고르기 — dom.pickFiles 가 있으면 그것(입력칸은 body 에 1개), 없으면 같은 방식으로 직접
 export function pickImages({ multiple = true } = {}) {
@@ -45,15 +64,15 @@ export function galleryToast({ ok, failed }) {
   toast(failed ? `사진 ${ok}장을 넣었어요 · ${failed}장은 못 넣었어요` : `사진 ${ok}장을 넣었어요`);
 }
 
-function cell(p, i, recordId, nav) {
+function cell(p, i, n, recordId, nav) {
   const ready = !p.state || p.state === 'ready';
   const inner = ready
     ? thumbW.thumb(p.id, { className: 'rec-img' })
     : h('span', { class: ['rec-ph', p.state === 'failed' ? 'fail' : ''], text: p.state === 'failed' ? '처리 실패' : '처리 중…' });
   return h('button', {
-    type: 'button', class: 'rec-cell', 'data-testid': 'rec-photo', 'data-id': p.id, 'aria-label': `사진 ${i + 1} 크게 보기`,
+    type: 'button', class: 'rec-cell', 'data-testid': 'rec-photo', 'data-id': p.id, 'aria-label': photoLabel(i, n),
     on: { click: () => nav.go('viewer', { recordId, photoId: p.id }) }
-  }, inner, h('span', { class: 'rec-no', text: String(i + 1) }));
+  }, inner, h('span', { class: 'rec-no', text: photoBadge(i, n) }));
 }
 
 // ---------- 도면 위치(도면보관함 연결) — 날짜 화면도 같이 쓴다 ----------
@@ -155,6 +174,7 @@ export default {
     const pinBox = h('div', { class: 'rec-pin', 'data-testid': 'rec-pin' });
     pinBox.hidden = true;
     const grid = h('div', { class: 'rec-grid' });
+    const photoHint = h('p', { class: 'rec-hint', 'data-testid': 'rec-photo-hint', text: '사진을 길게 눌러 끌면 순서를 바꿔요', hidden: true });
     const empty = h('p', { class: 'rec-empty', text: '사진이 없어요. 아래 [사진 더 찍기]로 찍어요.' });
     const delBtn = h('button', { type: 'button', class: 'textbtn rec-del', 'data-testid': 'rec-delete' }, icon('trash'), h('span', { text: '묶음 삭제' }));
 
@@ -167,7 +187,7 @@ export default {
     const dock = h('div', { class: 'dock rec-dock' }, addBtn, moreBtn);
 
     const body = h('div', { class: 'rec-body' },
-      h('div', { class: 'rec-fields' }, locBtn, conBtn), info, gpsInfo, pinBox, grid, empty, delBtn);
+      h('div', { class: 'rec-fields' }, locBtn, conBtn), info, gpsInfo, pinBox, photoHint, grid, empty, delBtn);
     const missing = h('p', { class: 'rec-empty', text: '이 묶음을 찾을 수 없어요. 지웠다면 설정 > 휴지통에서 되살릴 수 있어요.' });
     root.classList.add('rec-scr');
     root.append(bar, body, missing, dock);
@@ -178,9 +198,12 @@ export default {
     async function edit(field) {
       const r = cur(); if (!r) return;
       const multi = field === 'content';
+      // 이전 내용(담당 1 계약 — 칸이 비었을 때만): 같은 날 사진대지 순서로 이 묶음 바로 앞쪽, 내용이 있는 가장 가까운 묶음
+      const t = multi && !(r.content || '').trim() && typeof model.prevContent === 'function' ? model.prevContent(store.recordsOfDay(r.day), r.id) : null;
       const v = await dom.textSheet({
         title: multi ? '내용' : '위치', value: r[field] || '', multiline: multi,
-        placeholder: multi ? '무엇을 찍었는지 적어요' : '어디서 찍었는지 적어요', draftKey: multi ? `rec-content-${id}` : null
+        placeholder: multi ? '무엇을 찍었는지 적어요' : '어디서 찍었는지 적어요', draftKey: multi ? `rec-content-${id}` : null,
+        prev: t ? { text: t } : null,
       });
       if (v == null || dead) return;
       const next = multi ? v.replace(/\s+$/, '') : v.trim();
@@ -346,9 +369,55 @@ export default {
       } finally { placing = false; }
     }
 
+    // ---------- 사진 순서(길게 눌러 끌기) ----------
+    let before = null;                                                         // 든 때의 사진 순서(되돌리기)
+    const badge = c => c.querySelector(':scope > .rec-no');
+    // 번호 배지·읽어 줄 이름만 그 자리에서 — keys 를 주면 「지금 놓으면 될 번호」(끄는 중 미리 보기, 이름은 그대로)
+    function renum(keys = null) {
+      const cells = [...grid.children], n = cells.length;
+      cells.forEach((c, i) => {
+        const at = keys ? keys.indexOf(c.dataset.id) : i;
+        const b = badge(c), t = photoBadge(at, n);
+        if (b && b.textContent !== t) b.textContent = t;
+        if (!keys) { const l = photoLabel(i, n); if (c.getAttribute('aria-label') !== l) c.setAttribute('aria-label', l); }
+      });
+    }
+    let hintGone = false, hintCounted = false;
+    const hintDone = () => hintGone || !hintLive(store.meta?.(HINT_KEY, null));
+    // 이 묶음 화면에서 안내가 보였다 — 화면마다 한 번 센다(3번 보이면 끝). 쓰기는 한가할 때(첫 그림과 다투지 않게)
+    const countHint = () => {
+      if (hintCounted || hintDone()) return;
+      hintCounted = true;
+      const write = () => {
+        const v = store.meta?.(HINT_KEY, null);
+        if (typeof v === 'number') return;                                   // 그새 끌었다
+        store.setMeta?.(HINT_KEY, { n: (v?.n || 0) + 1, at: v?.at || Date.now() })?.catch?.(e => console.warn('안내 표지를 남기지 못했다', e));
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(write, { timeout: 3000 }); else setTimeout(write, 500);
+    };
+    const ro = reorderable(grid, {
+      mode: 'grid', start: 'longpress', longPressMs: LONG_MS, keyOf: c => c.dataset.id,
+      onLift: () => { before = (store.photosOf(id) || []).map(p => p.id); },
+      onMove: ({ keys, key, ghost }) => {
+        renum(keys);
+        const gb = ghost && badge(ghost); if (gb) gb.textContent = photoBadge(keys.indexOf(key), keys.length);
+      },
+      onCancel: () => { before = null; renum(); },
+      onDrop: ({ keys }) => {
+        renum();
+        const prev = before; before = null;
+        if (!hintGone && typeof store.meta?.(HINT_KEY, null) !== 'number') store.setMeta?.(HINT_KEY, Date.now())?.catch?.(e => console.warn('안내 표지를 남기지 못했다', e));
+        hintGone = true;
+        photoHint.hidden = true;
+        dom.snackbar?.('사진 순서를 바꿨어요', { actionLabel: '되돌리기', onAction: () => (prev ? store.reorderPhotos(id, prev) : null) });
+        store.reorderPhotos(id, keys).catch(e => { console.error('사진 순서를 저장하지 못했다', e); toast('순서를 저장하지 못했어요. 다시 해 주세요'); schedule(); });
+      },
+    });
+
     function render() {
       queued = false;
       if (dead) return;
+      if (ro.state() !== 'idle') { ro.afterDrag(schedule); return; }          // 길게 누르는 중·끄는 중에 격자를 고치면 들지 못하거나 끌기가 취소된다 — 뗀 뒤 한 번
       const r = cur();
       body.hidden = !r; dock.hidden = !r; shareBtn.hidden = !r; missing.hidden = !!r;
       if (!r) { title.textContent = '묶음'; return; }
@@ -368,7 +437,11 @@ export default {
       if (g) gpsInfo.textContent = `GPS ${geo.fmtCoord ? geo.fmtCoord(g.lat, g.lng) : `${g.lat.toFixed(5)}, ${g.lng.toFixed(5)}`}${Number.isFinite(g.acc) ? ` ${geo.fmtAcc ? geo.fmtAcc(g.acc) : `±${Math.round(g.acc)}m`}` : ''}`;
 
       grid.classList.toggle('cols-3', photos.length > 8);
-      dom.syncList(grid, photos, { key: p => p.id, sig: p => `${photos.indexOf(p)}|${!p.state || p.state === 'ready' ? 'ready' : p.state}`, make: p => cell(p, photos.indexOf(p), id, nav) });   // 바뀐 칸만
+      // 바뀐 칸만 — 자리 번호는 서명에 넣지 않는다(순서만 바뀐 칸을 다시 만들면 썸네일이 다시 불려 깜빡인다). 번호는 renum 이 그 자리에서
+      dom.syncList(grid, photos, { key: p => p.id, sig: p => (!p.state || p.state === 'ready' ? 'ready' : p.state), make: p => cell(p, photos.indexOf(p), photos.length, id, nav) });
+      renum();
+      photoHint.hidden = !(photos.length >= 2 && !hintDone());
+      if (!photoHint.hidden) countHint();
       grid.hidden = !photos.length;
       empty.hidden = !!photos.length;
       renderPin(r);
@@ -393,6 +466,6 @@ export default {
       renderPin(cur());
     });
 
-    return () => { dead = true; schedule.cancel?.(); off?.(); offDwg?.(); dropMini(); dock.remove(); };
+    return () => { dead = true; schedule.cancel?.(); off?.(); offDwg?.(); try { ro.destroy(); } catch { /* 무시 */ } dropMini(); dock.remove(); };
   }
 };

@@ -215,6 +215,14 @@ textarea.sheet-field{min-height:112px;resize:none}
 .sheet-fieldwrap .sheet-field{padding-right:52px}
 .sheet-clear{position:absolute;right:2px;top:50%;width:44px;height:44px;margin-top:-22px;display:grid;place-items:center;border-radius:8px;color:var(--ink2);background:none}
 .sheet-clear:active{background:#F1F2EF}
+/* 「이전 내용」 단추(v0.1.7, dom.textSheet prev): 빈 여러 줄 칸 안 아래쪽에 겹친다 — 시트 높이·[확인] 자리 그대로(칸 아래 줄로 두면 360×640·키보드 330px 에서 [확인]이 가려졌다).
+   주 행동이 아니라 노랑·검정 2px 없음. 라벨 14px #474C52 │ 글 16px 한 줄 말줄임, 누름 자리 48px */
+.sheet-prevwrap{position:relative}
+.sheet-prev{position:absolute;left:8px;right:8px;bottom:8px;display:flex;align-items:center;gap:8px;min-height:48px;padding:6px 12px;
+  border:1px solid var(--soft);border-radius:10px;background:#F4F5F2;color:var(--ink);text-align:left}
+.sheet-prev b{flex:none;padding-right:8px;border-right:1px solid var(--soft);font-size:14px;font-weight:800;line-height:1.3;color:var(--ink2);white-space:nowrap}
+.sheet-prev span{flex:1;min-width:0;font-size:16px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheet-prev:active{background:#E4E6E1}
 .sheet-field:focus{border-color:#000;box-shadow:inset 0 0 0 1px #000}
 .sheet-actions{display:flex;gap:var(--gap)}
 .sheet-actions > .secondary{flex:0 0 34%}

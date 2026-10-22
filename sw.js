@@ -9,7 +9,7 @@
 // - 새 SW 가 기다리면 앱이 [새로 고침] → postMessage('skip') → skipWaiting → 앱이 controllerchange 에서 reload.
 
 // @gen:list-start
-const CACHE = 'lite-db6e259e9c';
+const CACHE = 'lite-42d8acc9ec';
 const PRECACHE = [
   "./",
   "./css/app.css",
@@ -49,6 +49,7 @@ const PRECACHE = [
   "./js/core/model.js",
   "./js/core/order.js",
   "./js/core/recover.js",
+  "./js/core/sendplan.js",
   "./js/core/tilemath.js",
   "./js/core/watermark.js",
   "./js/core/xlsx.js",
@@ -60,6 +61,7 @@ const PRECACHE = [
   "./js/data/folders.js",
   "./js/data/photofs.js",
   "./js/data/safety.js",
+  "./js/data/sendlog.js",
   "./js/data/snaps.js",
   "./js/data/store.js",
   "./js/media/camera.js",
@@ -71,6 +73,7 @@ const PRECACHE = [
   "./js/media/locmapimg.js",
   "./js/media/pipeline.js",
   "./js/media/render.js",
+  "./js/media/xlsxworker.js",
   "./js/platform/awake.js",
   "./js/platform/native.js",
   "./js/services/backupio.js",
@@ -78,6 +81,7 @@ const PRECACHE = [
   "./js/services/gps.js",
   "./js/services/heading.js",
   "./js/services/sendflow.js",
+  "./js/services/sendrun.js",
   "./js/services/share.js",
   "./js/services/vworld.js",
   "./js/ui/app.js",

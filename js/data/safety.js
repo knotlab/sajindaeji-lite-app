@@ -37,7 +37,9 @@ const KEEP = 14;
 const DAY = 864e5;
 const FILE_GAP = 10 * 60 * 1000;                                             // 백그라운드 파일 백업 최소 간격(같은 날)
 // 이것만 바뀐 건 백업할 변화가 아니다(촬영 화면이 자주 쓰는 표지 포함 — 셔터 한 번에 앱 전환마다 전체 백업이 돌던 것)
-const QUIET_META = ['lastAutoBackup', 'lastAutoBackupAt', 'restoreSnooze', 'restoreVerified', 'lastShotAt', 'captureLayout', 'captureDoc', 'captureDrawing', 'pendingShot'];
+// 백업 JSON 에 들지 않는 표지 — 바뀌어도 「백업할 변화」가 아니다(0.1.7: 보냄 기록·내보내기 탭 기억·진행 중 보내기·끌기 안내 — 카톡으로 갈 때(pause) 백업이 돌지 않게)
+const QUIET_META = ['lastAutoBackup', 'lastAutoBackupAt', 'restoreSnooze', 'restoreVerified', 'lastShotAt', 'captureLayout', 'captureDoc', 'captureDrawing', 'pendingShot',
+  'sendLog', 'exportPrefs', 'sendRun', 'hintDragRecord', 'hintDragPhoto'];
 const MIRROR_META = ['settings', 'lastLocation', 'installId', 'seqMax', 'purgedIds', 'lastBackupAt'];
 const FOLDERS = [
   { dir: DATA, folder: 'backup', label: '앱 안' },

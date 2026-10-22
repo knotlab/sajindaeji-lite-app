@@ -264,17 +264,63 @@ export function frameJpegs(bitmap, { turns = 0, aspect = null, q = 0.92, pvMax =
 //   (내보내기·카톡 보내기 굽기: 메인 toDataURL 이 1920×1440 장당 60~70ms, 4배 늦춘 폰 약 250ms 화면을 막았다 — v0.1.5 검토).
 //   워커가 없거나 실패하면 예전 경로(메인 toDataURL — toBlob 금지 규칙 그대로)
 export async function encodeJpegFast(canvas, q) {
-  if (forced !== 'main' && workerUsable() && canvas?.width && canvas?.height) {
+  const [u] = await encodeJpegSet(canvas, [{ max: 0, q }]);
+  return u;
+}
+
+// 그림 하나 → 크기 여러 벌 JPEG(v0.1.7 내보내기 — 사진대지 칸 1000px·대장 480px 줄이기를 메인 toDataURL 에서 워커로).
+//   src  : ImageBitmap(워커로 넘긴다 — 닫힌다) · canvas · OffscreenCanvas(복사해 넘김) · Blob·Uint8Array·ArrayBuffer(JPEG — 워커가 푼다, 메인 일 0)
+//   sizes: [{ max, q }] — max 0(또는 없음) = 원래 크기, 원래보다 키우지 않는다. 결과는 sizes 순서
+//   opts : blobs(true 면 Blob[] — 캐시·다른 워커로 넘길 때 메모리를 덜 쓴다. 기본 Uint8Array[]), w0·h0(JPEG 원래 크기 — 주면 머리를 읽지 않는다)
+//   JPEG 입력에서 원래 크기 그대로인 칸은 다시 인코딩하지 않는다(받은 바이트 그대로 — 워터마크 없는 작업본 = 바이트 같음).
+//   워커가 없거나 실패하면 메인(toDataURL — toBlob 금지 규칙 그대로). 넘겨준 ImageBitmap 이 워커에서 실패해 사라졌으면 code 'WORKER_LOST'(호출자가 다시 그린다)
+export async function encodeJpegSet(src, sizes, { blobs = false, w0 = 0, h0 = 0 } = {}) {
+  const list = (Array.isArray(sizes) ? sizes : []).map(s => ({ max: s?.max > 0 ? Math.round(s.max) : 0, q: s?.q > 0 && s.q <= 1 ? s.q : IMG.workQ }));
+  if (!list.length) return [];
+  const jpegIn = src instanceof Blob || src instanceof Uint8Array || src instanceof ArrayBuffer;
+  const isBmp = !jpegIn && typeof ImageBitmap === 'function' && src instanceof ImageBitmap;
+  const done = async out => (blobs ? out : Promise.all(out.map(async b => new Uint8Array(await b.arrayBuffer()))));
+  if (forced !== 'main' && workerUsable()) {
     try {
-      const bmp = await createImageBitmap(canvas);
-      const r = await wkCall({ op: 'encode', bitmap: bmp, q }, 60000, { transfer: [bmp] });
-      return new Uint8Array(await r.blob.arrayBuffer());
+      if (jpegIn) {
+        const blob = asBlob(src);
+        let W = w0, H = h0;
+        if (!(W > 0 && H > 0)) { const info = await jpegInfoOf(blob); W = info?.w || 0; H = info?.h || 0; }
+        return done((await wkCall({ op: 'encode', blob, w0: W, h0: H, sizes: list })).blobs);
+      }
+      const bmp = isBmp ? src : await createImageBitmap(src);
+      return done((await wkCall({ op: 'encode', bitmap: bmp, sizes: list }, 60000, { transfer: [bmp] })).blobs);
     } catch (e) {
       if (forced === 'worker') throw e;
+      if (isBmp && !(src.width > 0)) throw Object.assign(e instanceof Error ? e : new Error(String(e)), { code: 'WORKER_LOST' });
       console.warn('워커 인코딩 실패 — 메인 스레드로 해요', e);
     }
   }
-  return canvasToJpeg(canvas, q);
+  return done(await encodeSetMain(src, list, jpegIn));
+}
+// 메인 스레드 경로 — 칸마다 원본에서 바로 줄여 toDataURL
+async function encodeSetMain(src, list, jpegIn) {
+  const img = jpegIn ? await decode(src) : src;
+  try {
+    const { w: W, h: H } = dims(img);
+    if (!W || !H) throw new Error('빈 그림이에요');
+    const out = [];
+    for (const s of list) {
+      const k = s.max ? Math.min(1, s.max / Math.max(W, H)) : 1;
+      if (jpegIn && k === 1) { out.push(asBlob(src)); continue; }
+      const reuse = k === 1 && typeof HTMLCanvasElement === 'function' && img instanceof HTMLCanvasElement;
+      const c = reuse ? img : document.createElement('canvas');
+      if (!reuse) {
+        c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+        const x = c.getContext('2d');
+        x.imageSmoothingQuality = 'high';
+        x.drawImage(img, 0, 0, c.width, c.height);
+      }
+      out.push(new Blob([canvasToJpeg(c, s.q)], { type: 'image/jpeg' }));
+      if (!reuse) { c.width = 0; c.height = 0; }
+    }
+    return out;
+  } finally { if (jpegIn || (typeof ImageBitmap === 'function' && img instanceof ImageBitmap)) img.close?.(); }
 }
 
 // 셔터 순간 미리보기 — video(또는 그림)를 돌리고 잘라 긴 변 maxSide 로 작게 그린 JPEG Blob(약 320px, 몇 ms)

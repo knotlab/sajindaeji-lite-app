@@ -199,6 +199,8 @@ async function boot() {
 
   // ⑤ 나머지(기다리지 않음) — 복구 확인(목록만 — 미러 이름·백업 index·localStorage 머리)은 첫 화면·첫 탭 뒤 한가할 때
   lite.restoreChecked = later().then(ask);
+  // 한번에 보내기(앱 0.1.7) — 카톡에 다녀오는 사이 앱이 다시 켜졌으면 「이어서 보내기」 + 탭 배지(meta sendRun 만 읽음), 앱은 지난 sendrun/ 임시 폴더 정리
+  later(2000).then(() => imp('../services/sendrun.js', { quiet: true })).then(m => { if (m) lite.sendrun = m; return m?.resume?.(); }).catch(e => console.warn('이어서 보내기 확인 실패', e));
   step('persist', async () => { if (navigator.storage?.persist && !(await navigator.storage.persisted?.())) await navigator.storage.persist(); });
   if (!isNative) registerSW(); else cleanCache(native);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') router.notifyResume(); });

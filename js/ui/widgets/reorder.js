@@ -1,4 +1,5 @@
-// 끌어 순서 바꾸기(v0.1.6 — 사용자 요구 「목록 순서같은거 드래그앤드롭으로 이동시킬 수 있게」). 순서 값 계산은 core/order.js.
+// 끌어 순서 바꾸기(앱 0.1.7 — 사용자 요구 「목록 순서같은거 드래그앤드롭으로 이동시킬 수 있게」). 순서 값 계산은 core/order.js.
+// 쓰는 곳: 홈 날짜 페이지 묶음 줄(screens/home.js — 길게 눌러) · 묶음 상세 사진 칸(screens/record.js — 길게 눌러, grid). 둘 다 450ms(폴더 고르기와 같게).
 //
 // reorderable(container, {
 //   itemSelector = '*',          container 의 바로 아래 자식 중 이것에 맞고 보이는 것이 항목(순서 = DOM 순서). 항목 사이에 다른 자식을 끼우지 않는다(앞·뒤는 괜찮다)
@@ -16,7 +17,7 @@
 //   disabled = false | () => boolean, announce = true | false | (text) => void, vibrate = 10(ms, 0 이면 없음)
 // }) → { destroy(), cancel(reason?), dragging(), state(), moveBy(keyOrEl, delta, opts?), moveTo(keyOrEl, index, opts?), setDisabled(v), afterDrag(fn), stats() }
 //   from·to = 화면(DOM) 자리(0부터, to = 옮긴 뒤 자리), keys = 옮긴 뒤 전체 key 순서(보이는 항목). 데이터 순서로 바꾸기는 core/order.js
-//   (홈처럼 화면이 「최신이 위」면 order.planMove(화면 목록, from, to, { desc: true, now })).
+//   (묶음 목록은 어디서나 사진대지 순서라 keys 를 그대로 store.reorderRecords(day, keys)·reorderPhotos(id, keys) 에 — 옮긴 것만 쓴다).
 //   onCancel 의 reason: 'noop'(들었다가 제자리에 놓음) | 'escape' | 'multitouch' | 'pointercancel' | 'hidden' | 'resize' | 'changed'(끄는 중 목록이 바뀜) | 'gone' | 'destroy' | 'api'
 //
 // 동작
@@ -39,7 +40,13 @@
 // 접근성: aria-live 로 「n번째로 옮겼어요」, 끌기 말고 moveBy/moveTo(메뉴 [위로]·[아래로]), 손잡이에 포커스가 있으면 ↑↓(격자는 ←→도), 항목에서는 Alt+↑↓.
 import { h } from '../dom.js';
 
+// 모양(css/reorder.css)은 index.html 이 싣는다(통합 때 메인). 그 줄이 없는 판·시험 페이지에서도 모양이 깨지지 않게 한 번만 붙인다(folderbar 방식)
+if (typeof document !== 'undefined' && !document.querySelector('link[href$="reorder.css"]')) {
+  document.head.append(h('link', { rel: 'stylesheet', href: new URL('../../../css/reorder.css', import.meta.url).href }));
+}
+
 const DUR = 180;                                  // 비켜 가기·내려앉기(ms) — CSS --ro-dur 와 같게
+const MOVED_MS = 200;                             // 키로 옮긴 항목 잠깐 표시(CSS .ro-moved 와 같게 — 움직임 150~200ms)
 const EASE = 'cubic-bezier(.2,.75,.25,1)';
 const HYS = 8;                                    // 놓일 자리 바꾸기 문턱(px) — 경계에서 떨지 않게
 const CLICK_MS = 700;                             // 놓은 뒤 따라오는 click 을 먹는 시간
@@ -150,6 +157,7 @@ export function reorderable(container, opts = {}) {
     press = null;
     st = 'idle';
     listenWin(false);
+    if (later.length) setTimeout(() => { if (st === 'idle') runLater(); }, 0);   // 누르는 동안 미룬 다시 그리기 — 뒤따르는 click(크게 보기 열기)이 원래 칸에 먼저 가게 다음 차례에
   }
 
   // ---------- 창 듣기(누르는 동안만 단다) ----------
@@ -572,7 +580,7 @@ export function reorderable(container, opts = {}) {
       const job = { timer: 0, done: null };
       job.done = () => { clearTimeout(job.timer); if (!settles.delete(job)) return; el.classList.remove('ro-moved'); if (!settles.size && st === 'idle') container.classList.remove('ro-on'); };
       settles.add(job);
-      job.timer = setTimeout(job.done, 700);
+      job.timer = setTimeout(job.done, MOVED_MS + 40);
     }
     if (via === 'key') { try { el.scrollIntoView({ block: 'nearest' }); } catch { /* 무시 */ } }
     stat.drops++; stat.lastReason = via;
@@ -596,9 +604,10 @@ export function reorderable(container, opts = {}) {
     if (st === 'press') endPress();
     else if (st === 'lift') end('cancel', reason);
   }
+  // 끄는 중(lift)뿐 아니라 길게 누르기를 기다리는 중(press)에도 미룬다 — 그 사이 칸을 다시 그리면(처리 중 → 완료 등) 들지 않고, 떼면 크게 보기가 열렸다(검토)
   function afterDrag(fn) {
     if (typeof fn !== 'function') return;
-    if (st !== 'lift') { fn(); return; }
+    if (st === 'idle') { fn(); return; }
     if (!later.includes(fn)) later.push(fn);
   }
   function runLater() {

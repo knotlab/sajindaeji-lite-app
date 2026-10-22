@@ -182,14 +182,20 @@ export async function readBytes(uri) {
 
 // ---- CACHE 쓰기 (설계 비평 #5) ----
 // <rel>.tmp 에 512KB base64 조각으로 덧붙이고, finish 에서 실제 크기가 기대 크기와 같은지 본 뒤 이름을 바꾼다 — 최종 이름이 보이면 늘 완성본이다
-export function cacheWriter(rel) {
+// chunk: 조각 크기(기본 512KB — v0.1.7 내보내기 ZIP 은 작게 줘서 브리지 한 번이 메인을 잡는 시간을 줄인다)
+// hold: 조각마다 쓰기 전에 기다릴 것(한번에 보내기가 다른 화면을 만지는 동안 브리지를 잡지 않게 — 없으면 바로)
+export function cacheWriter(rel, { chunk = CHUNK, hold = null } = {}) {
   const tmp = `${rel}.tmp`;
+  const step = Math.max(64 * 1024, Math.round(Number(chunk) || CHUNK));
   let started = null, written = 0;
   const start = () => (started ??= fsWrite(DIR.CACHE, tmp, ''));
   return {
     async append(u8) {
       await start();
-      for (let i = 0; i < u8.length; i += CHUNK) await fsAppend(DIR.CACHE, tmp, await toB64(u8.subarray(i, i + CHUNK)));
+      for (let i = 0; i < u8.length; i += step) {
+        if (hold) { try { await hold(); } catch { /* 그냥 쓴다 */ } }
+        await fsAppend(DIR.CACHE, tmp, await toB64(u8.subarray(i, i + step)));
+      }
       written += u8.length;
     },
     async finish(expectedSize = written) {
@@ -215,11 +221,43 @@ export async function writeCache(path, blobOrBytes, onProgress) {
   } catch (e) { await w.abort(); throw e; }
 }
 
+// 공유·내보내기 파일 하나를 CACHE/<path> 에 바로 쓴다(v0.1.7) → file:// 주소.
+//   브리지는 512KB 조각마다 한 번(작으면 한 번뿐), 주소는 initFileBase 뿌리로 만든다(getUri 왕복 없음).
+//   writeCache(임시 이름 → 크기 확인 → 이름 바꾸기 → getUri: 조각 수 + 4번)보다 적다 — 받는 앱이 보는 것은 끝난 뒤 넘기는 주소뿐이라 임시 이름이 필요 없다.
+//   verify: 다 쓴 뒤 크기를 한 번 확인(조각이 조용히 빠진 파일을 넘기지 않게 — 여러 조각인 큰 파일에 권함). 실패하면 쓰다 만 파일을 지우고 던진다.
+//   chunk: 조각 크기(기본 512KB). 큰 파일(사진대지 xlsx 수 MB)은 작게 주면 브리지 한 번이 메인·UI 스레드를 잡는 시간이 짧아진다(합은 같다)
+//   data: Blob | Uint8Array | ArrayBuffer (Blob 이면 조각만 읽는다 — 통째로 메모리에 올리지 않음)
+//   hold: 둘째 조각부터 쓰기 전에 기다릴 것(첫 조각 전은 부르는 쪽이) — 한번에 보내기가 다른 화면을 만지는 동안 브리지를 잡지 않게
+export async function writeShareFile(path, data, { verify = false, chunk = CHUNK, hold = null } = {}) {
+  const rel = String(path || '').split('/').filter(Boolean).join('/');
+  if (!rel) throw Object.assign(new Error('파일 이름이 없어요'), { code: 'NO_FILE' });
+  const blob = data instanceof Blob ? data : new Blob([data instanceof ArrayBuffer ? new Uint8Array(data) : data]);
+  const size = blob.size;
+  const step = Math.max(64 * 1024, Math.round(Number(chunk) || CHUNK));       // 조각마다 따로 base64(플러그인도 조각마다 풀어 덧붙인다)
+  try {
+    if (size <= step) await fsWrite(DIR.CACHE, rel, size ? await toB64(blob) : '');
+    else {
+      for (let at = 0; at < size; at += step) {
+        if (hold && at) { try { await hold(); } catch { /* 그냥 쓴다 */ } }
+        const b64 = await toB64(blob.slice(at, Math.min(size, at + step)));
+        if (at === 0) await fsWrite(DIR.CACHE, rel, b64);
+        else await fsAppend(DIR.CACHE, rel, b64);
+      }
+    }
+    if (verify) {
+      const st = await fsStat(DIR.CACHE, rel);
+      if (!st || Number(st.size) !== size) throw new Error(`저장한 파일 크기가 맞지 않아요(기대 ${size}, 실제 ${st ? st.size : '없음'})`);
+    }
+  } catch (e) { await fsDelete(DIR.CACHE, rel).catch(() => {}); throw e; }
+  const root = fileBase.get(DIR.CACHE);
+  return root != null ? `${root}/${rel.split('/').map(encodeURIComponent).join('/')}` : fsUri(DIR.CACHE, rel);
+}
+
 // ZIP 흐름 쓰기용 싱크 — 앱: CACHE/<rel> 파일, 웹: Blob 조각을 모았다가 마지막에 하나로.
-// → { write(u8), finish(size) → { blob } | { uri, path }, abort() }
-export function zipSink(rel, mime = 'application/zip') {
+// → { write(u8), finish(size) → { blob } | { uri, path }, abort() }. chunk·hold: 앱 CACHE 조각 크기·조각마다 기다릴 것(cacheWriter)
+export function zipSink(rel, mime = 'application/zip', { chunk = CHUNK, hold = null } = {}) {
   if (isNative()) {
-    const w = cacheWriter(rel);
+    const w = cacheWriter(rel, { chunk, hold });
     return { write: u8 => w.append(u8), finish: async size => ({ uri: await w.finish(size), path: rel }), abort: () => w.abort() };
   }
   let parts = [];
@@ -236,11 +274,29 @@ export function zipSink(rel, mime = 'application/zip') {
 }
 
 // CACHE 의 내보내기·공유·백업 사본 정리 — app.js 가 첫 화면을 그린 뒤 부른다(공유 직후에는 받는 앱이 읽는 중일 수 있어 지우지 않는다)
-// CACHE 뿌리를 한 번 readdir 해서 있는 것만 지운다(폴더마다 stat 하던 3번 → 1번, 속도 감사 #16). orig = 갤러리 원본 보내기 임시
-export async function cleanupCache(dirs = ['export', 'share', 'backup', 'orig']) {
+// CACHE 뿌리를 한 번 readdir 해서 있는 것만 지운다(폴더마다 stat 하던 3번 → 1번, 속도 감사 #16). orig = 갤러리 원본 보내기 임시, sendrun = 한번에 보내기 사진(v0.1.7)
+// 인자: 폴더 목록(옛 모양) 또는 { dirs, keep } — keep: 남길 경로(하나 또는 여럿, 'sendrun/<id>' 처럼). 폴더 안 한 칸이면 그 폴더의 나머지만 지운다(이어서 보내기).
+//   sendrun 은 keep 을 넘긴 부르기(null 이라도 — 진행 중인 보내기를 아는 쪽)에서만 지운다: 옛 부르기 cleanupCache() 가 이어서 보낼 사진을 지우지 않게
+export const CACHE_DIRS = Object.freeze(['export', 'share', 'backup', 'orig', 'sendrun']);
+export async function cleanupCache(opts = {}) {
   if (!isNative()) return;
+  const o = Array.isArray(opts) ? { dirs: opts } : (opts || {});
+  const dirs = Array.isArray(o.dirs) ? o.dirs : 'keep' in o ? CACHE_DIRS : CACHE_DIRS.filter(d => d !== 'sendrun');
+  const keep = (Array.isArray(o.keep) ? o.keep : [o.keep]).map(k => String(k || '').split('/').filter(Boolean).join('/')).filter(Boolean);
   const have = new Set((await fsList(DIR.CACHE, '')).map(f => f.name));
-  for (const d of dirs) if (have.has(d)) await fsRmdir(DIR.CACHE, d).catch(e => console.warn('임시 폴더를 지우지 못했어요', d, e));
+  for (const d of dirs) {
+    if (!have.has(d)) continue;
+    const mine = keep.filter(k => k === d || k.startsWith(`${d}/`));
+    try {
+      if (!mine.length) { await fsRmdir(DIR.CACHE, d); continue; }
+      if (mine.includes(d)) continue;
+      for (const f of await fsList(DIR.CACHE, d)) {
+        const p = `${d}/${f.name}`;
+        if (mine.some(k => k === p || k.startsWith(`${p}/`))) continue;
+        await (f.type === 'directory' ? fsRmdir(DIR.CACHE, p) : fsDelete(DIR.CACHE, p));
+      }
+    } catch (e) { console.warn('임시 폴더를 지우지 못했어요', d, e); }
+  }
 }
 
 // CACHE 파일(주소 또는 {path}) → 문서/현장사진대지 lite/<relPath>. 같은 이름이 있는데 못 덮으면 시각을 붙인다 → 실제 주소

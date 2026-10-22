@@ -1,6 +1,6 @@
 // 공유 뒤처리(services/share.js 의 결과). 사진을 굽는 사이 활성화가 끝났으면(needTap) [공유하기] 시트로 한 번 더 누르게 하고,
 // 한도(웹 10장·앱 20장)를 넘어 나눠졌으면(more) [다음 사진 보내기 (2/3)] 시트를 차례로 띄운다. 끝나면 토스트로 알린다.
-import { h, openSheet, toast } from '../dom.js';
+import { h, openSheet, toast, snackbar } from '../dom.js';
 
 // 시트 하나: 주 버튼을 누르면 그 탭 안에서 run() 을 부른다(공유창은 사용자 탭 안에서만 뜬다). [그만]·뒤로 = null
 function step(title, label, run) {
@@ -22,24 +22,38 @@ function doneText(r, total, copied) {
   return r?.where === 'download' ? `사진 ${total}장을 내려받았어요` : `사진 ${total}장을 보냈어요`;
 }
 
+// 묶음 상세 [공유]가 넘긴 사진을 「보낸 묶음」으로 적었으면(share.shareRecord — 내보내기 탭 한번에 보내기의 카톡에서 빠진다) 5초 [되돌리기].
+//   감독관 1:1 방처럼 단톡방이 아닌 곳에 보냈으면 되돌려 저녁 한번에 보내기에 다시 들게 한다(검토 — 조용히 적어 단톡방 보고에서 빠질 수 있었다)
+async function offerUndo(p) {
+  let tokens = [];
+  try { tokens = (await p?.marked?.()) || []; } catch { tokens = []; }
+  if (!tokens.length) return;
+  snackbar('보낸 묶음으로 표시했어요', {
+    actionLabel: '되돌리기',
+    onAction: async () => { const S = await import('../../services/share.js'); await S.unmarkSent(tokens); toast('보냄 표시를 거뒀어요'); },
+  });
+}
+
 export async function afterShare(r) {
   if (!r) return;
   const p = r.prepared, n = p?.batches || 0, copied = !!r.copied;
-  if (r.textOnly) { toast(doneText(r, 0, copied)); return; }
-  let k = 0;
-  for (;;) {
-    if (r?.needTap && p) {
-      r = await step('사진을 보낼 준비가 됐어요', n > 1 ? `공유하기 (${k + 1}/${n})` : '공유하기', () => p.send(k));
+  try {
+    if (r.textOnly) { toast(doneText(r, 0, copied)); return; }
+    let k = 0;
+    for (;;) {
+      if (r?.needTap && p) {
+        r = await step('사진을 보낼 준비가 됐어요', n > 1 ? `공유하기 (${k + 1}/${n})` : '공유하기', () => p.send(k));
+        if (!r) return;
+        continue;
+      }
+      if (!r?.ok) {
+        if (r && !r.cancelled) toast('공유하지 못했어요');
+        return;
+      }
+      k++;
+      if (k >= n) { toast(doneText(r, p?.total || 0, copied)); return; }
+      r = await step(`사진 ${p.total}장을 ${n}번에 나눠 보내요`, `다음 사진 보내기 (${k + 1}/${n})`, () => p.send(k));
       if (!r) return;
-      continue;
     }
-    if (!r?.ok) {
-      if (r && !r.cancelled) toast('공유하지 못했어요');
-      return;
-    }
-    k++;
-    if (k >= n) { toast(doneText(r, p?.total || 0, copied)); return; }
-    r = await step(`사진 ${p.total}장을 ${n}번에 나눠 보내요`, `다음 사진 보내기 (${k + 1}/${n})`, () => p.send(k));
-    if (!r) return;
-  }
+  } finally { await offerUndo(p); }                                  // 나눠 보내다 그만둬도 넘긴 묶음까지는 적혀 있다
 }

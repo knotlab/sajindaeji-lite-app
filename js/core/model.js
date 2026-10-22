@@ -61,3 +61,18 @@ export function photoNo(record, photoId, photos) {
   for (const id of ids) { if (alive(id)) n++; if (id === photoId) return n; }
   return 0;
 }
+
+// 「이전 내용」(v0.1.7, 사용자 요구 2026-10-22 — 다음 묶음 내용을 쓸 때 이전 내용이 적힌 단추 하나. 이어받기 토글·자동 채우기는 아니다).
+// dayRecords: 그 날 살아 있는 묶음을 사진대지 순서로(store.recordsOfDay — 끌어 바꾼 순서). recordId 바로 앞에서 거꾸로 올라가며
+// 내용이 있는(공백만이 아닌) 가장 가까운 묶음의 content 원문. recordId 가 없거나(아직 만들지 않은 새 묶음) 목록에 없으면 맨 끝부터.
+// 없으면 null — 그 날 첫 묶음(다른 날은 보지 않는다: 사진대지는 날짜 단위라 「이 날 목록에서 바로 위 묶음」으로 늘 예측된다)
+export function prevContent(dayRecords, recordId = null) {
+  const list = Array.isArray(dayRecords) ? dayRecords : [];
+  let i = recordId == null ? -1 : list.findIndex(r => r?.id === recordId);
+  if (i < 0) i = list.length;
+  for (let j = i - 1; j >= 0; j--) {
+    const t = list[j]?.content;
+    if (typeof t === 'string' && /\S/.test(t)) return t;
+  }
+  return null;
+}

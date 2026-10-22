@@ -9,9 +9,13 @@
 // 화면 쪽 훅: onCopied(ok) — 글 복사 결과(진행 글에 「글 복사함」), first(run, info) — 첫 공유를 열지(내보내기 탭이 안 보이면 탭할 때까지 기다린다),
 //   hold() — 장마다 굽기 전에 기다릴 것(촬영 화면이 열려 있으면 쉰다 — 셔터·글 입력 지연을 되살리지 않게).
 // composeText 는 순수 함수(node 단위 시험 tests/unit/sendtext.test.mjs). 저장소·그림·플랫폼 모듈은 쓸 때 연다(node 에서 이 파일을 불러올 수 있게).
+// 앱 0.1.7: 내보내기 탭의 「한번에 보내기」는 services/sendrun.js 가 맡는다(단계·보냄 기록·저절로 다음). 이 파일은 카톡 글(composeText — 묶음 글을 만드는 두 곳 중 하나,
+//   프리셋 설계 §5.1②)과 예전 흐름 sendRecords(시험·다른 화면용)·사진 저장(⋮ 「사진 휴대폰에 저장」)을 둔다.
+//   순서는 사진대지 순서(core/order.js compareByDay — 날짜 → 그 날 순서. 끌어 바꾼 순서가 글 ①②③ 에도 그대로).
 import { mdw, dayStart } from '../core/date.js';
 import { circled } from '../core/model.js';
 import { oneLine } from '../core/watermark.js';
+import { compareByDay } from '../core/order.js';
 
 export const APP_PART = 20;                              // config.MAX_SHARE_PHOTOS 와 같게(아래에서 config 값을 쓴다)
 export const WEB_PART = 10;                              // 크롬 Web Share 한도
@@ -20,16 +24,24 @@ const CONTENT_MAX = 40;                                  // 한 줄 내용 글�
 const LOC_MAX = 40;
 
 const clip = (s, max) => { const ch = Array.from(s); return ch.length > max ? `${ch.slice(0, max - 1).join('').trimEnd()}…` : s; };
-const byDayTime = (a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : (a.createdAt || 0) - (b.createdAt || 0));
+const byDay = (a, b) => compareByDay(a, b);
 const dayText = d => mdw(dayStart(d));
 
 // ---- 글 ----
-// records: 묶음 배열(어떤 순서든 — 날짜 → 만든 시각 순으로 줄 세운다). 옵션:
+// 묶음 하나의 위치·내용 글 — 카톡 글(composeText, 한 줄로 줄임)과 묶음 상세 [공유](share.shareText, full — 여러 줄 그대로)가 함께 쓴다.
+//   묶음 글을 만드는 곳은 여기(카톡)와 core/ledger.js sheetContent(사진대지 칸) 둘뿐 — 프리셋 결과 줄은 나중에 이 두 곳에만 붙인다(docs/프리셋-설계.md §5.1②)
+export function recordText(record, { full = false } = {}) {
+  if (full) return { loc: String(record?.location || '').trim() || '위치 미입력', content: String(record?.content || '').trim() };
+  return { loc: clip(oneLine(record?.location), LOC_MAX) || '위치 미입력', content: clip(oneLine(record?.content), CONTENT_MAX) };
+}
+// records: 묶음 배열(어떤 순서든 — 사진대지 순서(날짜 → 그 날 순서)로 줄 세운다). 옵션:
 //   siteName — 머리 [현장명](비면 뺀다) · day 또는 from,to — 머리 날짜(안 주면 묶음들의 날짜에서) ·
-//   photoCount(record) → 그 묶음에서 보낼 사진 수(안 주면 record.photoCount, 그것도 없으면 photoIds 길이)
+//   photoCount(record) → 그 묶음에서 보낼 사진 수(안 주면 record.photoCount, 그것도 없으면 photoIds 길이) ·
+//   more — Map|객체 recordId → n: 보낸 뒤 더 생긴 사진만 보내는 묶음(줄 끝이 「(사진 n장 더)」, n = 보낼 사진 수) ·
+//   seqOf(record, i) → 번호(안 주면 1부터 차례) — 한번에 보내기는 사진대지 순번(대장 「순번」과 같은 수)을 준다
 // → '[현장명] 10/22(수) 현장 사진 4건 · 9장' + 묶음마다 '① 위치 — 내용 한 줄 (사진 n장)'. 여러 날이면 날짜마다 '■ 10/21(화)' 줄. 묶음이 없으면 ''
-export function composeText(records, { siteName = '', day = null, from = null, to = null, photoCount = null } = {}) {
-  const list = [...(records || [])].filter(Boolean).sort(byDayTime);
+export function composeText(records, { siteName = '', day = null, from = null, to = null, photoCount = null, more = null, seqOf = null } = {}) {
+  const list = [...(records || [])].filter(Boolean).sort(byDay);
   if (!list.length) return '';
   const count = r => {
     const n = typeof photoCount === 'function' ? photoCount(r) : (Number.isFinite(r.photoCount) ? r.photoCount : (r.photoIds?.length || 0));
@@ -41,13 +53,15 @@ export function composeText(records, { siteName = '', day = null, from = null, t
   const site = oneLine(siteName);
   const lines = [`${site ? `[${site}] ` : ''}${when} 현장 사진 ${list.length}건${total ? ` · ${total}장` : ''}`];
   const multi = new Set(list.map(r => r.day)).size > 1;
+  const isMore = id => !!(more && (more instanceof Map ? more.has(id) : Object.prototype.hasOwnProperty.call(more, id)));
   let lastDay = null;
   for (const [i, r] of list.entries()) {
     if (multi && r.day !== lastDay) { lines.push(`■ ${dayText(r.day)}`); lastDay = r.day; }
-    const loc = clip(oneLine(r.location), LOC_MAX) || '위치 미입력';
-    const content = clip(oneLine(r.content), CONTENT_MAX);
+    const { loc, content } = recordText(r);
     const n = count(r);
-    lines.push(`${circled(i + 1)} ${loc}${content ? ` — ${content}` : ''} (${n ? `사진 ${n}장` : '사진 없음'})`);
+    const no = typeof seqOf === 'function' ? Number(seqOf(r, i)) : NaN;
+    const tail = n ? `사진 ${n}장${isMore(r.id) ? ' 더' : ''}` : '사진 없음';
+    lines.push(`${circled(Number.isFinite(no) && no > 0 ? no : i + 1)} ${loc}${content ? ` — ${content}` : ''} (${tail})`);
   }
   return lines.join('\n');
 }
@@ -72,7 +86,7 @@ const yieldNow = () => (globalThis.scheduler?.yield ? globalThis.scheduler.yield
 const isNativeOf = N => { try { return !!N.isNative?.(); } catch { return false; } };
 const tell = (fn, ...a) => { try { fn?.(...a); } catch (e) { console.error(e); } };
 
-// 고른 id → 살아 있는 묶음(날짜 → 만든 시각 순) + 묶음마다 ready 사진
+// 고른 id → 살아 있는 묶음(사진대지 순서 — 날짜 → 그 날 순서) + 묶음마다 ready 사진
 function gather(store, recordIds) {
   const seen = new Set();
   const records = [];
@@ -82,7 +96,7 @@ function gather(store, recordIds) {
     const r = store.record(id);
     if (r && !r.deletedAt) records.push(r);
   }
-  records.sort(byDayTime);
+  records.sort(byDay);
   const photosBy = new Map(records.map(r => [r.id, store.photosOf(r.id).filter(p => p.state === 'ready')]));
   const rows = records.flatMap(r => photosBy.get(r.id).map(photo => ({ record: r, photo })));
   return { records, photosBy, rows, from: records[0]?.day || null, to: records.at(-1)?.day || null };
@@ -110,7 +124,7 @@ async function bake(M, rows, { tick, signal, put, hold }) {
     if (hold) { try { await hold(); } catch { /* 그냥 굽는다 */ } }
     if (signal?.aborted) return { items, skipped, cancelled: true };
     try {
-      const bytes = await M.render.exportJpeg(r.photo.id);
+      const bytes = await M.render.exportJpeg(r.photo.id, { keep: false });   // 한 번 쓰고 끝 — 구운 그림 캐시에 남기지 않는다(비울 때가 없다)
       items.push(await put(r.name, bytes));
     } catch (e) { console.warn('보낼 사진을 만들지 못했어요', r.photo.id, e); skipped++; }
     tell(tick);
@@ -227,8 +241,11 @@ export async function sendRecords(recordIds, { onProgress, signal, ask = default
     let k = 0, sent = 0, where = null, cancelled = false, error = null;
     let r = first ? await first(() => sendOne(0), { n: nOf(), total: totalOf() }) : await sendOne(0);
     if (first && !r) cancelled = true;
+    // 밖의 [그만](signal) — 공유 창이 떠 있는 사이에 눌렀어도 돌아와서 다음 단계를 묻지 않는다(0.1.6 고장 2: 굽기만 멈추고 「다음 사진 보내기」 시트가 또 떴다)
+    const stopped = () => !!signal?.aborted;
     while (!cancelled) {
       if (r?.needTap) {
+        if (stopped()) { cancelled = true; break; }
         r = await ask({ title: '사진을 보낼 준비가 됐어요', label: nOf() > 1 ? `공유하기 (${k + 1}/${nOf()})` : '공유하기', note, k, n: nOf() }, () => sendOne(k));
         if (!r) { cancelled = true; break; }
         continue;
@@ -236,8 +253,10 @@ export async function sendRecords(recordIds, { onProgress, signal, ask = default
       if (!r?.ok) { if (r?.cancelled) cancelled = true; else error = r?.error || '공유하지 못했어요'; break; }
       sent += groups[k].length; where = r.where || where;
       k++;
+      if (stopped()) { cancelled = true; break; }
       const next = await groupAt(k);
       if (!next) { if (bakeCancelled) cancelled = true; break; }
+      if (stopped()) { cancelled = true; break; }
       r = await ask({ title: `사진 ${totalOf()}장을 ${nOf()}번에 나눠 보내요`, label: `다음 사진 보내기 (${k + 1}/${nOf()})`, note, k, n: nOf() }, () => sendOne(k));
       if (!r) { cancelled = true; break; }
     }

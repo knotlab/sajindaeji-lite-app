@@ -273,6 +273,7 @@ export function openSheet(build, { modal = false, onClose, label, cls = null } =
 // 자동완성·맞춤법 검사 끔(기존 선택지처럼 보이지 않게, 맞춤법 검사는 안드로이드에서 단어마다 따로 돈다). 한글 조합은 그대로(키보드 추천도 그대로).
 // select: 'lastNumber' — 열 때 마지막 숫자 덩어리를 골라 둔다(「101동 5층 503호 욕실 벽」의 503 → 바로 쳐서 바꾸기). 숫자가 없으면 커서 끝.
 // [확인]은 곧바로 닫히고 값을 돌려준다 — 저장은 부른 쪽이 뒤에서(화면에 먼저 보이게).
+// prev: { text, label = '이전 내용' } — (v0.1.7) 여러 줄 칸이 비었을 때만 칸 안 아래쪽에 겹쳐 뜨는 「이전 내용」 단추 하나(prevButton). 한 줄 칸에서는 무시
 const DRAFT = 'lite:draft:';
 const DRAFT_MS = 800;
 function draftGet(key) { try { return JSON.parse(sessionStorage.getItem(DRAFT + key) || 'null'); } catch { return null; } }
@@ -283,7 +284,7 @@ export function lastNumberRange(s) {
   return m ? [m.index, m.index + m[0].length] : null;
 }
 
-export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', cancelLabel = '취소', hint = null, draftKey = null, select = null } = {}) {
+export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', cancelLabel = '취소', hint = null, draftKey = null, select = null, prev = null } = {}) {
   return new Promise(resolve => {
     let result = null, draftT = 0, flushDraft = null;
     const key = multiline ? (draftKey || title || 'text') : null;
@@ -310,15 +311,20 @@ export function textSheet({ title, value = '', placeholder = '', multiline = fal
       // 한 줄 칸: 오른쪽 지우기(×) — 이어받은 위치를 통째로 바꿀 때 백스페이스를 여러 번 누르지 않게
       const clear = multiline ? null : h('button', { type: 'button', class: 'sheet-clear', 'aria-label': '지우기', 'data-testid': 'sheet-clear', onpointerdown: e => e.preventDefault(),   // 눌러도 칸이 포커스를 잃지 않게(키보드 유지)
         onclick: () => { field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); field.focus({ preventScroll: true }); } }, icon('close', 20));
+      const pBtn = multiline ? prevButton(field, prev) : null;                   // 「이전 내용」 단추 — 칸 안에 겹친다(시트 높이·[확인] 자리 그대로)
+      const pWrap = pBtn ? h('div', { class: 'sheet-prevwrap' }, field) : null;
       const body = h('div', { class: 'sheet-body' },
         title ? h('h2', { class: 'sheet-title', text: title }) : null,
-        clear ? h('div', { class: 'sheet-fieldwrap' }, field, clear) : field,
+        clear ? h('div', { class: 'sheet-fieldwrap' }, field, clear) : pWrap || field,
         hint ? (hint instanceof Node ? hint : h('p', { class: 'note', text: hint })) : null,
         h('div', { class: 'sheet-actions' },
           h('button', { type: 'button', class: 'secondary', 'data-testid': 'sheet-cancel', text: cancelLabel || '취소', onclick: () => { result = null; closeTopSheet(); } }),
           h('button', { type: 'button', class: 'primary', 'data-testid': 'sheet-ok', text: okLabel, onclick: ok })));
       // 상자에 붙은 직후 포커스(같은 탭 작업 안 — 키보드가 뜬다)
       focusEnd(field, select === 'lastNumber' ? lastNumberRange(field.value) : null);
+      // 「이전 내용」 단추는 시트가 한 번 그려진 뒤에 붙인다 — 탭 → 칸 포커스(키보드) 사이의 강제 배치에 단추 글 배치가 끼지 않게
+      // (앱을 켜고 처음 열 때 단추 글 모양 잡기로 탭 처리가 4배 늦춤에서 약 +30ms 였다. 겹치는 단추라 늦게 붙어도 칸·시트 높이는 그대로)
+      if (pBtn) requestAnimationFrame(() => setTimeout(() => pWrap.append(pBtn), 0));
       return body;
     }, {
       modal: true, label: title, cls: 'sheet-text',
@@ -347,6 +353,41 @@ function focusEnd(field, range = null) {
     });
   };
   queueMicrotask(go);                                                            // build 가 돌려준 노드를 box 에 붙인 직후 — 같은 작업(사용자 탭) 안이다
+}
+
+// 「이전 내용」 단추(v0.1.7 사용자 요구 「내용 작성할 때 이전 내용이 적힌 단추」 — 자동 채우기·토글 아님). prev = { text, label } 하나(배열·여러 개 없음 — 프리셋 설계 §5.1 ①).
+// 칸이 비었을 때(공백만 포함)만 보인다. 누르면 칸을 그 글로 바꾸고 커서는 끝 — pointerdown 기본 동작을 막아 칸이 포커스를 잃지 않는다(키보드 유지, sheet-clear 와 같은 방식).
+// 다 지우면 다시 보인다. 보임·숨김은 비었다↔찼다가 바뀔 때만 DOM 을 건드린다(글자마다 일하지 않게). 글은 textContent 로만(자유 입력 글).
+// 부르는 쪽(촬영 화면·묶음 상세)은 칸이 빈 채로 열 때만 넘긴다 — 글이 있는 칸을 지웠을 때 이 단추가 「지운 글 되돌리기」로 읽히지 않게
+const PREV_SHOW = 120;                                                           // 단추에 싣는 글자 수(한 줄 말줄임이라 앞쪽만 보인다)
+function prevButton(field, prev) {
+  const text = prev && typeof prev === 'object' ? String(prev.text ?? '') : '';
+  if (!/\S/.test(text)) return null;
+  const label = String(prev.label || '이전 내용');
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const one = flat.length > PREV_SHOW ? `${flat.slice(0, PREV_SHOW)}…` : flat;
+  const btn = h('button', {
+    type: 'button', class: 'sheet-prev', 'data-testid': 'sheet-prev', 'aria-label': `${label} 넣기: ${one}`,
+    onpointerdown: e => e.preventDefault(),
+    onclick: () => {
+      field.value = text;
+      field.dispatchEvent(new Event('input', { bubbles: true }));               // 초안·단추 숨김이 손으로 친 것과 같은 길로
+      field.focus({ preventScroll: true });
+      const n = field.value.length;                                              // \r\n 은 칸에서 \n 이 된다 — 칸 글 길이로
+      try { field.setSelectionRange(n, n); } catch { /* 선택 범위 없는 칸 */ }
+      field.scrollTop = field.scrollHeight;                                      // 긴 글이면 끝(커서)이 보이게
+    },
+  }, h('b', { text: label }), h('span', { text: one }));
+  let empty = null;
+  const sync = ev => {
+    // 찬 칸에 글자를 넣는 입력(조합 중 글자 포함)이면 칸이 빌 수 없다 — 칸 글을 읽지 않고 넘긴다(긴 글에서도 글자마다 일 0)
+    if (empty === false && ev?.inputType?.startsWith('insert') && ev.data && /\S/.test(ev.data)) return;
+    const e = !/\S/.test(field.value);
+    if (e !== empty) { empty = e; btn.hidden = !e; }
+  };
+  field.addEventListener('input', sync);
+  sync();                                                                        // 처음 글(값·초안)이 있으면 숨긴 채로
+  return btn;
 }
 
 // ---- 확인 대화상자 ----
