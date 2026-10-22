@@ -1,5 +1,5 @@
 // 설정 화면(SPEC §6.7) — 바꾸면 바로 저장(저장 버튼 없음).
-// 1 현장 · 2 워터마크(+미리보기 그림) · 3 촬영(방식·비율·갤러리 저장·저장 위치) · 4 위치(VWorld 키) · 5 백업 · 6 휴지통 · 7 정보
+// 1 현장 · 2 워터마크(+미리보기 그림·촬영 일시) · 3 촬영(방식·비율·도면·카메라 배치·갤러리 저장·저장 위치) · 4 위치(VWorld 키) · 5 백업 · 6 휴지통 · 7 정보
 // 입력칸은 한글 조합 중에는 저장을 미루고, store.on 으로 다시 그릴 때 포커스가 있는 칸은 건드리지 않는다(review-notes: 한 글자마다 키보드가 닫히는 문제).
 // 백업 ZIP 만들기·복원의 진행 상태와 결과는 화면 밖(flow)에 둔다 — 파일 선택창·공유 앱에 다녀오는 사이 화면이 다시 그려져도 이어진다.
 import * as dom from '../dom.js';
@@ -92,8 +92,9 @@ function seg(testid, options, get, set) {
   }, h('span', { class: 'st-seg-label', text: o.label }), o.sub ? h('span', { class: 'st-seg-sub', text: o.sub }) : null));
   const el = h('div', { class: ['st-seg', options.length > 2 && 'st-seg-3'].filter(Boolean), role: 'group' }, ...btns);
   const paint = () => { const v = get(); for (const b of btns) { const on = b.dataset.value === v; b.setAttribute('aria-pressed', String(on)); b.classList.toggle('on', on); } };
+  const setDisabled = off => { for (const b of btns) b.disabled = !!off; };
   paint();
-  return { el, paint };
+  return { el, paint, setDisabled };
 }
 
 // 스위치 줄 — 글자 「켜짐/꺼짐」을 같이 보인다
@@ -144,14 +145,23 @@ function textField(testid, label, key, { placeholder = '', hint = null, type = '
 
 // ---- 워터마크 미리보기(core/watermark 로 canvas 에 예시) ----
 // 원본(작업본) 크기로 배치를 계산하고 축소해서 그린다 — 썸네일·크게 보기와 같은 방식(WYSIWYG)
-const SAMPLE_REC = { location: '', content: '2층 슬래브 철근 배근 검측' };
+// 미리보기 글 = 가장 최근 묶음의 실제 위치·내용(없으면 중립 글 「위치」·「내용」 — 지어낸 현장 글을 보이지 않는다, 사용자 지시)
+function sampleRec() {
+  try {
+    const days = (store.days?.() || []).map(d => d.day).sort();
+    for (let i = days.length - 1; i >= 0; i--) {
+      const r = (store.recordsOfDay(days[i]) || []).at(-1);
+      if (r) return { location: (r.location || '').trim() || (store.lastLocation?.() || '').trim() || '위치', content: (r.content || '').trim() || '내용' };
+    }
+  } catch { /* 아래로 */ }
+  return { location: (store.lastLocation?.() || '').trim() || '위치', content: '내용' };
+}
 function ratioWH(ratio) {
   if (ratio === '16:9') return [1600, 900];
   if (ratio === '3:4') return [1200, 1600];
   return [1600, 1200];
 }
-function drawPreview(canvas) {
-  const s = store.settings();
+function drawPreview(canvas, s = store.settings()) {
   const [W, H] = ratioWH(s.photoRatio);
   const scale = s.photoRatio === '3:4' ? 0.25 : 0.4;
   canvas.width = Math.round(W * scale); canvas.height = Math.round(H * scale);
@@ -166,12 +176,12 @@ function drawPreview(canvas) {
   for (let i = 0; i < 6; i++) ctx.fillRect(canvas.width * (0.08 + i * 0.15), canvas.height * 0.18, canvas.width * 0.06, canvas.height * 0.5);
   ctx.fillStyle = 'rgba(0,0,0,0.12)';
   ctx.fillRect(0, canvas.height * 0.68, canvas.width, canvas.height * 0.32);
-  const opts = wm.wmOpts ? wm.wmOpts(s) : { mode: s.wmMode, date: s.wmDate };
+  const opts = wm.wmOpts(s);                                                // { mode, when, date } — 사진·썸네일과 같은 계산(WYSIWYG)
   if (opts.mode === 'off') return;
-  const rec = { ...SAMPLE_REC, location: (store.lastLocation?.() || '').trim() || 'A동 3층 기둥 C-12' };
+  const rec = sampleRec();
   const photo = { takenAt: Date.now(), takenAtSource: 'camera' };
   let lines;
-  try { lines = wm.watermarkLines(rec, photo, { mode: opts.mode, date: opts.date }); } catch { return; }
+  try { lines = wm.watermarkLines(rec, photo, opts); } catch { return; }
   if (!lines?.length) return;
   ctx.save();
   ctx.scale(scale, scale);
@@ -236,29 +246,33 @@ export default {
     const S = () => store.settings();
 
     // 1. 현장
-    const site = textField('set-site', '현장명', 'siteName', { placeholder: '예: ○○아파트 신축공사', hint: '사진대지 현장명 칸에 들어가요' });
+    const site = textField('set-site', '현장명', 'siteName', { placeholder: '공사 이름', hint: '사진대지 현장명 칸에 들어가요' });
     const author = textField('set-author', '작성자', 'author', { placeholder: '이름' });
 
     // 2. 워터마크
     const preview = h('canvas', { class: 'st-preview', 'data-testid': 'wm-preview', 'aria-label': '워터마크 미리보기' });
     let previewKey = '';
-    const repaintPreview = () => {                                          // 미리보기에 쓰는 값이 바뀐 때만 다시 그린다(현장명·키를 쓰는 동안은 그대로)
+    const repaintPreview = (s = S()) => {                                   // 미리보기에 쓰는 값이 바뀐 때만 다시 그린다(현장명·키를 쓰는 동안은 그대로)
       if (dead) return;
-      const s = S();
-      const k = JSON.stringify([s.wmMode, s.wmDate, s.photoRatio, store.lastLocation?.() || '']);
+      const k = JSON.stringify([s.wmMode, wm.wmWhenOf(s), s.photoRatio, store.lastLocation?.() || '']);
       if (k === previewKey) return;
       previewKey = k;
-      drawPreview(preview);
+      drawPreview(preview, s);
     };
+    // 누르는 그 순간 미리보기부터 바꾼다(저장 완료 알림을 기다리지 않음). 고른 표시(aria-pressed)는 저장이 끝난 뒤 — 저장된 값과 어긋나지 않게
+    const saveWm = patch => { repaintPreview({ ...S(), ...patch }); return save(patch); };
     const wmSeg = seg('set-wm-mode', [
       { value: 'off', label: '끄기' }, { value: 'loc', label: '위치만' }, { value: 'loc+content', label: '위치+내용' },
-    ], () => S().wmMode, v => save({ wmMode: v }));
+    ], () => S().wmMode, v => saveWm({ wmMode: v }));
     const wmScreen = toggle('set-wm-screen', '썸네일·크게 보기에도 표시', null, () => S().wmOnScreen, v => save({ wmOnScreen: v }));
-    const wmDate = toggle('set-wm-date', '촬영 일시 함께 넣기', null, () => S().wmDate, v => save({ wmDate: v }));
+    // 촬영 일시 — 날짜+시간 / 날짜만 / 안 넣기(옛 「촬영 일시 함께 넣기」 스위치 wmDate 는 wmWhenOf 가 읽어 준다). 옛 키도 맞춰 둔다(이전 판으로 되돌려도 뜻이 같게)
+    const whenSeg = seg('set-wm-when', [
+      { value: 'datetime', label: '날짜+시간' }, { value: 'date', label: '날짜만' }, { value: 'off', label: '안 넣기' },
+    ], () => wm.wmWhenOf(S()), v => saveWm({ wmWhen: v, wmDate: v !== 'off' }));
     const wmNote = h('p', { class: 'st-hint st-preview-cap' });
     const paintWm = () => {
       const off = S().wmMode === 'off';
-      wmScreen.el.disabled = off; wmDate.el.disabled = off;
+      wmScreen.el.disabled = off; whenSeg.setDisabled(off);
       wmNote.textContent = off ? '사진에 아무것도 넣지 않아요' : '내보내는 사진에 이렇게 들어가요';
     };
 
@@ -268,10 +282,18 @@ export default {
     ], () => S().captureMode, v => save({ captureMode: v }));
     const ratioSeg = seg('set-photo-ratio', [
       { value: '4:3', label: '가로 4:3', sub: '기본' }, { value: '16:9', label: '가로 16:9', sub: '칸에 꽉 차요' }, { value: '3:4', label: '세로 3:4' },
-    ], () => S().photoRatio, v => save({ photoRatio: v }));
+    ], () => S().photoRatio, v => saveWm({ photoRatio: v }));
     const galleryTg = toggle('set-gallery', '원본을 휴대폰 갤러리에도 저장', '앱을 지워도 갤러리에 남아요', () => S().saveToGallery, v => save({ saveToGallery: v }));
     // 고화질 원본: 켜면 앱 안 카메라가 정지 사진(takePhoto, 긴 변 약 3264px)으로 찍는다 — 안드로이드는 장당 1~3초 걸려 기본은 끔(미리보기 프레임으로 바로 찍기)
     const hiresTg = toggle('set-hires', '고화질 원본(느림)', '켜면 사진이 1~3초 늦게 찍혀요', () => S().captureHiRes === true, v => save({ captureHiRes: v }));
+    // 도면·카메라 배치 — 같은 창(기본: 셔터 위 [카메라 | 도면] 단추로 바꿈, 문이 열리고 닫힘) / 작은 창(나란히 보기). 다음에 촬영 화면에 들어올 때부터 적용.
+    // 고르면 「직접 고름」 표시도 같이 — 그래야 store.settings() 가 저장된 값을 따른다(옛 기본값이 박힌 백업과 구분, v0.1.6)
+    const stageSeg = seg('set-capture-stage', [
+      { value: 'shared', label: '같은 창', sub: '기본' }, { value: 'split', label: '작은 창', sub: '나란히 보기' },
+    ], () => (S().captureStage === 'split' ? 'split' : 'shared'), v => save({ captureStage: v, captureStagePicked: true }));
+    const stageAutoTg = toggle('set-stage-auto', '찍고 나면 도면으로 자동 돌아가기', '마지막 사진 4초 뒤', () => S().stageAutoReturn === true, v => save({ stageAutoReturn: v, stageAutoPicked: true }));
+    const stageAutoBox = h('div', { class: 'st-list st-gap', 'data-role': 'stage-auto' }, stageAutoTg.el);   // 같은 창일 때만 보임
+    const paintStage = () => { stageSeg.paint(); stageAutoTg.paint(); stageAutoBox.hidden = S().captureStage === 'split'; };
     const prefSeg = seg('set-gallery-pref', [{ value: 'sd', label: 'SD카드' }, { value: 'phone', label: '휴대폰' }], () => S().galleryPref, v => save({ galleryPref: v }));
     const sdNote = h('p', { class: 'st-hint', 'data-role': 'sd-note' });
     const failLine = h('div', { class: 'st-inline', 'data-role': 'gallery-failed', hidden: true });
@@ -503,10 +525,14 @@ export default {
     const scroll = h('div', { class: 'st-wrap' },
       h('div', { class: 'bar' }, backBtn, h('h1', { text: '설정' })),
       section('현장', h('div', { class: 'st-list' }, site.el, author.el)),
-      section('워터마크', wmSeg.el, h('div', { class: 'st-preview-box' }, preview, wmNote), h('div', { class: 'st-list' }, wmScreen.el, wmDate.el)),
+      section('워터마크', wmSeg.el, h('div', { class: 'st-preview-box' }, preview, wmNote),
+        h('p', { class: 'st-label st-cap', text: '촬영 일시' }), whenSeg.el,
+        h('div', { class: 'st-list st-gap' }, wmScreen.el)),
       section('촬영',
         h('p', { class: 'st-label st-cap', text: '촬영 방식' }), capSeg.el,
         h('p', { class: 'st-label st-cap', text: '사진 비율' }), ratioSeg.el,
+        h('p', { class: 'st-label st-cap', text: '도면·카메라 배치' }), stageSeg.el,
+        stageAutoBox,
         h('div', { class: 'st-list st-gap' }, hiresTg.el),
         isNat ? h('div', { class: 'st-list st-gap' }, galleryTg.el,
           h('div', { class: 'st-sub-block' }, h('p', { class: 'st-label st-cap', text: '원본 저장 위치' }), prefSeg.el, sdNote), failLine) : null),
@@ -523,8 +549,8 @@ export default {
     const paintAll = () => {
       if (dead) return;
       site.paint(); author.paint(); keyField.paint();
-      wmSeg.paint(); wmScreen.paint(); wmDate.paint(); paintWm();
-      capSeg.paint(); ratioSeg.paint(); hiresTg.paint(); galleryTg.paint(); prefSeg.paint();
+      wmSeg.paint(); wmScreen.paint(); whenSeg.paint(); paintWm();
+      capSeg.paint(); ratioSeg.paint(); paintStage(); hiresTg.paint(); galleryTg.paint(); prefSeg.paint();
       if (isNat) paintGallery();
       paintV(); paintTrash(); paintFlow();
       repaintPreview();

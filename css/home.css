@@ -9,7 +9,7 @@
 .home-backup[hidden]{display:none}
 .home-backup-mark{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--ink);color:var(--hivis);font-size:14px;font-weight:900;flex:none}
 .home-backup-t{flex:1;min-width:0}
-.home-backup .ic,.home-day>.ic{color:var(--ink2);width:20px;height:20px}
+.home-backup .ic{color:var(--ink2);width:20px;height:20px}
 
 /* 위치 카드 — 누르면 실시간 위치 지도. 끝의 「지도 >」가 누를 수 있다는 단서 */
 .home-gps{display:flex;align-items:center;background:var(--paper);border-radius:var(--r,12px);overflow:hidden;cursor:pointer}
@@ -19,36 +19,40 @@
 .home-gps-map[hidden]{display:none}
 .home-gps:active{background:#F1F2EF}
 
-/* [도면]·[자료함] 타일 둘(나란히, 엄지로 누르기 쉬운 높이) */
-.home-tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-.home-tile{display:flex;align-items:center;gap:10px;min-width:0;min-height:64px;padding:8px 10px 8px 12px;border:0;background:var(--paper);border-radius:var(--r,12px);text-align:left;color:var(--ink)}
-.home-tile:active{background:#F1F2EF}
-.home-tile-ic{display:grid;place-items:center;flex:none;width:40px;height:40px;border-radius:10px;background:var(--concrete)}
-.home-tile-t{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
-.home-tile-t b{font-size:16px;font-weight:800}
-.home-tile-t small{font-size:13px;font-weight:600;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
-/* 지금 서 있는 도면이 있으면 아이콘 칸만 옅은 노랑(글자 「지금 여기」가 같이 알린다 — 노란 주 행동은 [기록 시작] 하나) */
-.home-tile.here .home-tile-ic{background:var(--hivis-tint)}
-.home-tile.here small{color:var(--ink)}
+/* 위치 카드 + [도면]·[자료함] 한 줄(v0.1.5 검토 — 위쪽 고정을 줄여 날짜 페이지가 묶음을 더 보이게) */
+.home-quick{display:flex;align-items:stretch;gap:8px}
+.home-quick > .home-gps{flex:1 1 auto;min-width:0}
+.home-quick .home-gps-map > span{display:none}            /* 좁은 줄 — 「지도」 글은 빼고 아이콘·> 만(aria-label 이 알린다) */
+.home-qbtn{flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:60px;min-height:48px;padding:4px 0;border:0;
+  background:var(--paper);border-radius:var(--r,12px);color:var(--ink);font-size:13px;font-weight:800;line-height:1.2;position:relative}
+.home-qbtn:active{background:#F1F2EF}
+.home-qbtn-t{white-space:nowrap}
+/* 지금 서 있는 도면이 있으면 [도면] 아이콘 둘레만 옅은 노랑(글자는 아래 「지금 여기」 줄이 알린다 — 노란 주 행동은 [기록 시작] 하나) */
+.home-qbtn.here{box-shadow:inset 0 0 0 2px var(--hivis-tint)}
+.home-here{display:flex;align-items:center;gap:6px;width:100%;min-height:44px;margin-top:8px;padding:0 12px;border:0;border-radius:var(--r,12px);
+  background:var(--hivis-tint);color:var(--ink);font-size:14px;font-weight:700;text-align:left}
+.home-here[hidden]{display:none}
+.home-here-t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-here-go{flex:none;text-decoration:underline;text-underline-offset:3px}
+.home-near{margin-top:8px}
+.home-near[hidden]{display:none}
 
-.home-sec{display:flex;align-items:center;gap:8px;margin:24px 0 8px;min-height:32px}
-.home-sec-t{flex:1;min-width:0;font-size:15px;font-weight:800;color:var(--ink2)}
 .home-sec-link{min-height:44px;padding:0 4px;margin:-6px -4px;border:0;background:none;font-size:14px;font-weight:700;color:var(--ink);text-decoration:underline;text-underline-offset:3px;flex:none}
-
-.home-list[hidden],.home-days[hidden],.home-empty[hidden],.home-more[hidden]{display:none}
+.home-list[hidden],.home-empty[hidden]{display:none}
 .home-empty{font-size:15px;color:var(--ink2);padding:16px;background:var(--paper);border-radius:12px;margin:0}
 
-
-.home-day{display:flex;align-items:center;gap:12px;width:100%;min-height:64px;padding:8px 8px 8px 16px;border:0;border-top:1px solid var(--soft);background:none;text-align:left;color:var(--ink)}
-.home-day:first-child{border-top:0}
-.home-day-t{display:flex;flex-direction:column;flex:none;min-width:96px;line-height:1.3}
-.home-day-t b{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
-.home-day-t small{font-size:13px;color:var(--ink2);white-space:nowrap}
-.home-day-th{flex:1;min-width:0;display:flex;gap:4px;justify-content:flex-end;overflow:hidden}
-.home-day-th .thumb-box{flex:none;border-radius:4px}
-.home-day-th img{width:52px;height:39px;border-radius:4px;flex:none}
-@media (max-width:370px){.home-day-th .thumb-box:nth-child(4){display:none}}
-.home-more{margin-top:4px}
+/* v0.1.5 날짜 넘기기(daypager) — 화면은 움직이지 않고 날짜 페이지가 스스로 세로 스크롤. 위쪽(바·위치·타일)은 고정 */
+.home-paged{overflow:hidden}
+.home-paged .home-quick{margin-top:0}
+.home-paged .dpg-head{margin-top:4px}
+.home-page{padding-top:4px}
+.home-page-head{display:flex;align-items:center;gap:8px;min-height:44px;margin:0 0 4px}
+.home-page-sum{flex:1;min-width:0;font-size:14px;font-weight:700;color:var(--ink2)}
+.home-page-xp[hidden]{display:none}
+.home-page-add{margin-top:12px}
+.home-page-loc{margin:16px 0 0}
+/* 좁은 화면(높이 700 이하): 위치 카드 보조 줄(정확도)을 숨겨 한 줄 높이로 */
+@media (max-height:700px){.home-quick .gps-sub{display:none}.home-quick .gpsline{min-height:44px;padding-top:4px;padding-bottom:4px}}
 
 /* 숨은 날짜 입력(홈·날짜 화면 공용) */
 .f-date-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}

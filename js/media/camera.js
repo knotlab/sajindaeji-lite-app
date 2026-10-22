@@ -104,7 +104,10 @@ export function _feedGravity(x, y) { haveMotion = true; sm = null; setDev(nextOr
 export function _resetOrientation(o = 0) { devO = norm(o); sm = null; haveMotion = false; }
 
 // ---------- 카메라 열기·닫기 ----------
-let stream = null, video = null, wanted = false, reopenTried = false, opening = null;
+// 열기 차례(turn): open()·attach()·close() 마다 +1 — 앞선 열기의 늦게 끝난 getUserMedia 가 그 뒤의 닫기·새 열기를 덮지 않게.
+//   그만둔 열기는 code 'cancelled' 로 끝나고 'error' 를 알리지 않는다(실패가 아니다). v0.1.6 검토: 식은 카메라(폰 0.6~0.8초)를 여는 중
+//   닫았다 다시 열면 앞선 스트림이 붙었다가 닫히고, 새 열기는 「닫혔다」며 실패해 가짜 「카메라를 열지 못했어요」가 떴다
+let stream = null, video = null, wanted = false, reopenTried = false, opening = null, turn = 0;
 let ic = null, photoOpts = null, photoOptsP = null, photoOptsBroken = false;   // ImageCapture 는 트랙마다 하나, photoSettings 는 열 때 한 번 구한다
 let lastCaps = { zoom: null, torch: false };
 const stateFns = new Set();
@@ -123,7 +126,9 @@ function codeOf(e) {
   if (n === 'NotReadableError' || n === 'AbortError' || n === 'TrackStartError') return 'busy';
   return 'unknown';
 }
-const fail = (code, cause) => Object.assign(new Error({ denied: '카메라 권한이 없어요', nocamera: '카메라를 찾지 못했어요', insecure: '보안 연결(https)에서만 카메라를 쓸 수 있어요', busy: '다른 앱이 카메라를 쓰고 있어요', unknown: '카메라를 열지 못했어요' }[code]), { code, cause });
+const fail = (code, cause) => Object.assign(new Error({ denied: '카메라 권한이 없어요', nocamera: '카메라를 찾지 못했어요', insecure: '보안 연결(https)에서만 카메라를 쓸 수 있어요', busy: '다른 앱이 카메라를 쓰고 있어요', unknown: '카메라를 열지 못했어요', cancelled: '카메라 열기를 그만뒀어요' }[code]), { code, cause });
+// 닫았거나 새로 열어 그만둔 열기 — 부른 쪽은 실패로 보지 않는다
+export const isCancelled = e => e?.code === 'cancelled';
 
 // 4:3 우선(설계 비평 8: 트랙을 16:9 로 열면 takePhoto 4:3 과 보이는 범위가 달라진다) → zoom 없이 → 1280×960 → 아무거나.
 // 트랙 = 사진: 기본 촬영이 이 프레임을 그대로 쓰므로 4:3 약 1920×1440(280만 화소 — 대지 작업본 1600px 에 넉넉).
@@ -163,18 +168,22 @@ function capsOf(track) {
   const c = track?.getCapabilities?.() || {};
   return { zoom: c.zoom && Number.isFinite(c.zoom.max) && c.zoom.max > c.zoom.min ? { min: c.zoom.min, max: c.zoom.max, step: c.zoom.step || 0.1 } : null, torch: !!c.torch };
 }
-async function start() {
+// my = 이 열기의 차례. getUserMedia 가 끝났을 때 차례가 지났으면(그사이 닫힘·새 열기) 스트림을 버리고 'cancelled' — 새 열기는 제 것을 연다
+async function start(my = turn) {
   const s = await getStream();
-  if (!wanted) { s.getTracks().forEach(t => t.stop()); throw fail('unknown'); }
+  if (my !== turn || !wanted) { s.getTracks().forEach(t => t.stop()); throw fail('cancelled'); }
   stream = s;
   const track = s.getVideoTracks()[0];
   track?.addEventListener('ended', onEnded);
-  if (video) {
-    video.muted = true; video.playsInline = true; video.autoplay = true;
-    video.setAttribute('playsinline', ''); video.setAttribute('muted', '');
-    video.srcObject = s;
-    try { await video.play(); } catch { /* 자동 재생 막힘 — 화면을 누르면 다시 재생된다 */ }
-    if (!video.videoWidth) await new Promise(r => { const t = setTimeout(r, 3000); video.addEventListener('loadedmetadata', () => { clearTimeout(t); r(); }, { once: true }); });
+  const v = video;
+  if (v) {
+    v.muted = true; v.playsInline = true; v.autoplay = true;
+    v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+    v.srcObject = s;
+    try { await v.play(); } catch { /* 자동 재생 막힘 — 화면을 누르면 다시 재생된다 */ }
+    if (stream !== s) throw fail('cancelled');                              // 붙이는 사이 닫힘(close 가 트랙을 멈췄다)·새 열기
+    if (!v.videoWidth) await new Promise(r => { const t = setTimeout(r, 3000); v.addEventListener('loadedmetadata', () => { clearTimeout(t); r(); }, { once: true }); });
+    if (stream !== s) throw fail('cancelled');
   }
   lastCaps = capsOf(track);
   prepCapture(track);
@@ -206,7 +215,8 @@ async function onEnded() {
   stopTracks();
   if (reopenTried) { emit('error', fail('busy')); return; }
   reopenTried = true;
-  try { await start(); } catch (e) { emit('error', e.code ? e : fail('unknown', e)); }
+  const my = turn;
+  try { await start(my); } catch (e) { if (!isCancelled(e) && my === turn) emit('error', e.code ? e : fail('unknown', e)); }
 }
 // 백그라운드로 가면 닫고(초록 점·배터리·안드로이드가 끊음) 돌아오면 다시 연다(설계 비평 8)
 function onHide() {
@@ -216,7 +226,9 @@ function onHide() {
 async function onShow() {
   if (!wanted || stream || opening) return;
   reopenTried = false;
-  try { opening = start(); await opening; } catch (e) { emit('error', e.code ? e : fail('unknown', e)); } finally { opening = null; }
+  const my = turn, p = start(my);
+  opening = p;
+  try { await p; } catch (e) { if (!isCancelled(e) && my === turn) emit('error', e.code ? e : fail('unknown', e)); } finally { if (opening === p) opening = null; }
 }
 function onVis() { if (document.hidden) onHide(); else onShow(); }
 function lifecycle(on) {
@@ -234,13 +246,19 @@ export async function open(videoEl) {
   if (lingering && stream && wanted) return attach(videoEl);                // 붙잡아 둔 stream 을 새 video 에 — 곧바로
   endLinger();
   if (wanted && video === videoEl && stream) return lastCaps;
+  if (wanted && video === videoEl && opening) return opening;                // 같은 video 를 여는 중 — 그것을 기다린다(카메라를 두 번 열지 않게)
   if (stream) stopTracks();
   if (!wanted) lifecycle(true);
   wanted = true; video = videoEl || null; reopenTried = false;
   listen(true);
-  try { opening = start(); return await opening; }
-  catch (e) { const err = e.code ? e : fail(codeOf(e), e); emit('error', err); throw err; }
-  finally { opening = null; }
+  const my = ++turn, p = start(my);
+  opening = p;
+  try { return await p; }
+  catch (e) {
+    const err = e?.code ? e : fail(codeOf(e), e);
+    if (!isCancelled(err) && my === turn) emit('error', err);               // 그만둔 열기·지난 열기의 실패는 알리지 않는다(새 열기가 제 결과를 알린다)
+    throw err;
+  } finally { if (opening === p) opening = null; }
 }
 // ---------- 쉬기(글 입력 시트가 떠 있는 동안) ----------
 // 트랙을 끄고(enabled=false — 카메라 프레임이 웹뷰로 오지 않는다) video 를 멈춘다(마지막 그림이 남아 검게 깜빡이지 않는다). 방향 감지(devicemotion 60Hz)도 끈다.
@@ -266,18 +284,20 @@ function endLinger() { clearTimeout(lingerT); lingerT = 0; lingering = false; }
 // 붙잡아 둔 stream 을 videoEl 에 다시 붙인다(트랙 다시 켬) → caps
 async function attach(videoEl) {
   endLinger();
+  const my = ++turn, s = stream;
   video = videoEl || null; reopenTried = false;
   listen(true);
-  const t = stream.getVideoTracks()[0];
+  const t = s.getVideoTracks()[0];
   if (t) t.enabled = !resting;
-  if (video) {
-    video.muted = true; video.playsInline = true; video.autoplay = true;
-    video.setAttribute('playsinline', ''); video.setAttribute('muted', '');
-    if (video.srcObject !== stream) video.srcObject = stream;
-    try { await video.play(); } catch { /* 자동 재생 막힘 */ }
-    if (!video.videoWidth && stream) await new Promise(r => { const tm = setTimeout(r, 3000); video.addEventListener('loadedmetadata', () => { clearTimeout(tm); r(); }, { once: true }); });
+  const v = video;
+  if (v) {
+    v.muted = true; v.playsInline = true; v.autoplay = true;
+    v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+    if (v.srcObject !== s) v.srcObject = s;
+    try { await v.play(); } catch { /* 자동 재생 막힘 */ }
+    if (!v.videoWidth && stream === s) await new Promise(r => { const tm = setTimeout(r, 3000); v.addEventListener('loadedmetadata', () => { clearTimeout(tm); r(); }, { once: true }); });
   }
-  if (!stream || !wanted) throw fail('unknown');                          // 붙이는 사이 닫힘(백그라운드)
+  if (my !== turn || stream !== s || !wanted) throw fail('cancelled');     // 붙이는 사이 닫힘(백그라운드)·새 열기
   emit('open');
   return lastCaps;
 }
@@ -313,6 +333,7 @@ export function warm() {
 }
 
 export function close() {
+  turn++;                                                                  // 여는 중이던 열기는 그만둔다(늦게 끝나도 붙이지 않는다)
   endLinger();
   wanted = false;
   resting = false;

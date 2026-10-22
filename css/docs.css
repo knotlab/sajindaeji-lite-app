@@ -33,6 +33,8 @@
 .dx-dist{font-size:14px;font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums}
 
 .dx-chips{margin-top:12px}
+.dx-folders{margin-top:12px}                 /* 폴더 줄(widgets/folderbar.js folderRows — 모양은 folders.css) */
+.dx-page > .fb-bar{margin-top:-8px}          /* 바로 아래 빵 부스러기는 바에 붙여 */
 .dx-chips[hidden]{display:none}
 .dx-chips .chip{min-height:44px;padding:0 14px;font-size:15px}
 

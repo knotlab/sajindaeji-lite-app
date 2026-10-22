@@ -33,7 +33,7 @@
 //   타일 주소는 비동기 — 받는 사이 범위가 바뀌어 치운 칸은 버린다. null(빈 칸·아직 안 만든 칸)은 그 칸을 비워 아래 미리보기 한 장이 비친다.
 //   VWorld 키 안내·저작권 줄은 이 모드에서 숨긴다. setSource(src) — 타일이 더 만들어졌을 때(보던 자리 그대로).
 //   setRotation(deg) 의 deg = 화면 위가 가리키는 「도면 위 각도」(0 = 도면 그대로). setNorth(deg|null) — 나침반 바늘이 도면 위 북쪽을 가리키게.
-import { h } from '../dom.js';
+import { h, isTyping } from '../dom.js';
 import * as TM from '../../core/tilemath.js';
 import { VWORLD_KEY } from '../../config.js';
 
@@ -144,7 +144,7 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   let follow = false;
   let namesOn = null;
   const subs = { marker: new Set(), move: new Set(), follow: new Set(), error: new Set(), tap: new Set(), render: new Set() };
-  const stats = { loads: 0, errors: 0, frames: 0, levels: 0, blank: 0 };
+  const stats = { loads: 0, errors: 0, frames: 0, levels: 0, blank: 0, memHits: 0, kept: 0, prefetched: 0 };
 
   const ws = zz => GEO.S0 * 2 ** zz;                                  // 세계 크기(px)
   function zminNow() {
@@ -175,26 +175,67 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     tilesBox, ov, note, attr, compass ? compassBtn : null);
 
   // 이미지 모드 바닥: 미리보기 한 장(없으면 흰 종이) — 타일이 오기 전·빈 칸에 비친다
-  let base = null, baseImg = null, baseW = 0, baseH = 0, baseTf = '';
+  // 빨리 보이기(0.1.5 「도면 빨리 띄우기」): ① 디코드 끝난 미리보기가 메모리에 있으면(src.previewNow — 최근 연 도면) 첫 그림에 바로
+  //   ② 없으면 목록 썸네일과 같은 맨 아래 단계 한 장(src.thumbNow — 이미 읽힌 것)을 흐린 바닥으로 먼저 ③ 미리보기를 읽고 디코드한 뒤 붙인다.
+  //   미리보기가 깔려 있고 지금 확대가 미리보기 1:1 근처면(미리보기가 그 타일 단계보다 선명하고 크게 줄이지 않아도 되면) 타일은 받지 않는다(tilesNeeded).
+  //   크게 줄여 보는 맞춤·작은 창은 타일 단계(워커가 고급 필터로 미리 줄인 그림)를 쓴다 — 미리보기를 GPU 로 3배 넘게 줄이면 가는 선이 끊겨 보인다.
+  let started = false;
+  let base = null, baseImg = null, thumbImg = null, pvReady = false, baseW = 0, baseH = 0, baseTf = '', pvGen = 0;
+  const call = f => { try { return typeof f === 'function' ? f() : null; } catch { return null; } };
+  function attachPreview(im) {
+    if (!im || !alive || baseImg) return;
+    if (im.isConnected) im = im.cloneNode();                            // 다른 지도가 같은 그림을 쓰는 중 — 같은 주소(디코드 캐시)
+    im.className = 'lm-pv';
+    im.alt = ''; im.draggable = false; im.decoding = 'async'; im.setAttribute('aria-hidden', 'true');
+    baseImg = im;
+    base.append(im);
+    const on = () => {
+      if (baseImg !== im || !alive) return;
+      im.onload = im.onerror = null; im.classList.add('on'); pvReady = true; thumbImg?.remove(); thumbImg = null;
+      if (started) schedule();                                        // 만드는 중(동기로 붙음)이면 끝에서 한 번 그린다
+    };
+    if (im.complete && im.naturalWidth) on(); else { im.onload = on; im.onerror = () => { im.onload = im.onerror = null; }; }
+  }
   function makeBase() {
     if (!GEO.image) return;
     const pw = +src.previewW, ph = +src.previewH;
     baseW = pw > 0 ? pw : 1024; baseH = ph > 0 ? ph : Math.max(1, Math.round(1024 * GEO.H / GEO.W));
     if (!base) {
-      base = h('div', { class: 'lm-base', style: { background: src.bg || '#fff' } });
+      base = h('div', { class: 'lm-base', style: { background: src.bg || '#fff', visibility: 'hidden' } });   // 크기를 알고 자리를 잡은 뒤 보인다(첫 그림이 엉뚱한 자리에 번쩍이지 않게)
       tilesBox.prepend(base);
     }
     base.style.width = `${baseW}px`; base.style.height = `${baseH}px`;
     baseTf = '';
-    if (typeof src.preview === 'function' && !baseImg) {
-      Promise.resolve(src.preview()).then(u => {
-        if (!u || !alive || baseImg) return;
-        baseImg = h('img', { class: 'lm-pv', alt: '', decoding: 'async', draggable: false, 'aria-hidden': 'true' });
-        baseImg.onload = () => { baseImg.classList.add('on'); };
-        baseImg.src = u;
-        base.append(baseImg);
-      }, () => {});
+    if (baseImg) return;
+    const gen = ++pvGen;
+    const now = call(src.previewNow);
+    if (now) { attachPreview(now); return; }
+    const th = call(src.thumbNow);
+    if (th && !thumbImg) {
+      thumbImg = h('img', { class: 'lm-pv lm-thumb', alt: '', decoding: 'async', draggable: false, 'aria-hidden': 'true' });
+      thumbImg.onload = () => { thumbImg?.classList.add('on'); };
+      thumbImg.src = th;
+      base.append(thumbImg);
     }
+    const p = typeof src.previewImg === 'function' ? call(src.previewImg)
+      : typeof src.preview === 'function' ? Promise.resolve(call(src.preview)).then(u => {
+        if (!u) return null;
+        const im = h('img', { alt: '', decoding: 'async', draggable: false });
+        im.src = u;
+        return im;
+      }) : null;
+    Promise.resolve(p).then(im => { if (gen === pvGen) attachPreview(im); }, () => {});
+  }
+  // 그 타일 단계가 필요한가(확대 zz 에서) — 미리보기가 그 단계보다 선명하고, 미리보기 화소가 기기 화소 1.5개 안팎으로만 줄면 미리보기 한 장으로 충분
+  const DPR = globalThis.devicePixelRatio || 1;
+  function tilesNeeded(lz, zz = z) {
+    if (!GEO.image || lz == null) return lz != null;
+    if (!pvReady) return true;
+    const l = GEO.levels?.[lz];
+    if (!l || l.w > baseW * 1.02) return true;
+    const shown = GEO.W * 2 ** (zz - GEO.top) * DPR;                 // 지금 쪽 그림 가로가 차지하는 기기 화소
+    const ratio = baseW / Math.max(1, shown);                         // 미리보기 화소 ÷ 기기 화소(1 = 딱 맞음, 3 = 3배로 줄임)
+    return ratio > (front ? 1.35 : 1.6);                              // 경계에서 오락가락하지 않게 조금 띄운다
   }
   makeBase();
 
@@ -296,13 +337,25 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   }
   function dropLevel(lv) {
     if (!lv) return;
-    for (const t of lv.tiles.values()) { t.dead = true; for (const im of t.imgs) freeImg(im); }
+    for (const [k, t] of lv.tiles) { t.dead = true; for (const im of t.imgs) releaseTileImg(k, im); }
     lv.tiles.clear();
     lv.el.remove();
+  }
+  // 이미지 모드: 다 그려진 칸 <img> 는 풀로 돌리지 않고 source 에 맡긴다(source.keep — 디코드된 채 LRU) → 다시 열거나 되돌아올 때 그대로 꺼내 첫 그림에
+  function releaseTileImg(k, im) {
+    if (GEO.image && typeof src?.keep === 'function' && im.classList.contains('on') && im.complete && im.naturalWidth) {
+      const [zs, xs, ys] = k.split('/');
+      im.onload = im.onerror = null;
+      im.remove();
+      if (call(() => src.keep(+zs, +xs, +ys, im))) return;
+    }
+    freeImg(im);
   }
   function switchFront(lz) {
     if (back) dropLevel(back);
     back = front;
+    // 확대해 들어갈 때: 앞 단계가 미리보기보다 흐리면 남겨 두지 않는다 — 새 칸이 올 때까지 더 선명한 미리보기가 비친다
+    if (back && GEO.image && pvReady && lz > back.z && (GEO.levels?.[back.z]?.w || 0) <= baseW) { dropLevel(back); back = null; }
     if (back) back.el.classList.add('back');
     front = makeLevel(lz);
     tilesBox.append(front.el);                                         // 뒤 단계 위에 — 새 타일이 오기 전에는 뒤 단계가 비쳐 보인다
@@ -340,21 +393,32 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   function addImageTile(lv, t, entry, fin1) {
     const g = lv.g, T = GEO.tile;
     if (g.blank?.has(t.y * g.cols + t.x)) { entry.blank = true; stats.blank++; fin1(); return; }
-    const im = takeImg();
+    // 맡겨 둔(디코드된) 칸이 있으면 그 <img> 를 그대로 — 기다림 없이 이 프레임에 보인다
+    const kept = typeof src.take === 'function' ? call(() => src.take(t.z, t.x, t.y)) : null;
+    const im = kept || takeImg();
     const tw = Math.min(T, g.lw - t.x * T), th = Math.min(T, g.lh - t.y * T);
     im.style.left = `${(t.x * T * g.kx - lv.ox).toFixed(2)}px`; im.style.top = `${(t.y * T * g.ky - lv.oy).toFixed(2)}px`;
     im.style.width = `${(tw * g.kx + 0.5).toFixed(2)}px`; im.style.height = `${(th * g.ky + 0.5).toFixed(2)}px`;
     lv.subs[0].append(im);
     entry.imgs.push(im);
-    let p;
-    try { p = src.tile(t.z, t.x, t.y); } catch { p = null; }
-    Promise.resolve(p).then(u => {
+    if (kept) {
+      im.className = 'lm-t on'; im.alt = ''; im.draggable = false; im.setAttribute('aria-hidden', 'true');
+      stats.memHits++; stats.kept++; fin1();
+      return;
+    }
+    const put = u => {
       if (entry.dead) return;
       if (!u) { entry.blank = true; stats.blank++; fin1(); return; }            // 아직 안 만든 칸·빈 칸 — 바닥이 비친다
       im.onload = () => { im.onload = im.onerror = null; im.classList.add('on'); stats.loads++; fin1(); };
       im.onerror = () => { im.onload = im.onerror = null; entry.bad = true; stats.errors++; fin1(); };
       im.src = u;
-    }, () => { if (!entry.dead) { entry.bad = true; fin1(); } });
+    };
+    // 이미 읽어 둔 칸(최근 연 도면·미리 받은 칸)은 기다림 없이 바로
+    const now = typeof src.tileNow === 'function' ? call(() => src.tileNow(t.z, t.x, t.y)) : null;
+    if (now) { stats.memHits++; put(now); return; }
+    let p;
+    try { p = src.tile(t.z, t.x, t.y); } catch { p = null; }
+    Promise.resolve(p).then(put, () => { if (!entry.dead) { entry.bad = true; fin1(); } });
   }
   function markBad(im, i) {
     im.classList.add('bad');
@@ -364,7 +428,7 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   function removeTile(lv, k, entry) {
     if (entry.done < entry.need) lv.pending--;
     entry.dead = true;
-    for (const im of entry.imgs) freeImg(im);
+    for (const im of entry.imgs) releaseTileImg(k, im);
     lv.tiles.delete(k);
   }
 
@@ -392,10 +456,11 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     if (tf !== lv.tf) { lv.tf = tf; lv.el.style.transform = tf; }
   }
   function baseTransform() {
-    if (!base) return;
+    if (!base || !W || !H) return;
     const w = ws(z), k = (GEO.W / baseW / GEO.S) * w;                  // 바닥 요소 1px → 세계 px
     const tf = `translate(${W / 2}px,${H / 2}px) rotate(${-bearing}deg) translate(${-cx * w}px,${-cy * w}px) scale(${k})`;
     if (tf !== baseTf) { baseTf = tf; base.style.transform = tf; }
+    if (base.style.visibility) base.style.visibility = '';
   }
 
   // ---- 타일 실패 알림(한 번만, 지도 모드) ----
@@ -574,8 +639,11 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
 
     // 타일 단계 고르기: 확대 애니메이션 중이면 도착할 단계, 아니면 지금 확대(경계에서 오락가락하지 않게)
     const target = viewAnim && viewAnim.to.z !== viewAnim.from.z ? viewAnim.to : null;
-    const lz = target ? GEO.level(target.z, null) : GEO.level(z, front ? front.z : null);
+    // 이미지 모드는 크기를 알기 전(맞춤 전 z=0)에 단계를 고르지 않는다 — 맞춘 확대에서 처음 고르게(그 단계로 굳지 않게)
+    const lz0 = GEO.image && (!W || !H) ? null : target ? GEO.level(target.z, null) : GEO.level(z, front ? front.z : null);
+    const lz = tilesNeeded(lz0, target ? target.z : z) ? lz0 : null;
     if (lz != null && (!front || front.z !== lz || front.layer !== curLayer)) switchFront(lz);
+    else if (lz == null && GEO.image && (front || back)) { dropLevel(back); back = null; dropLevel(front); front = null; }   // 미리보기가 더 선명 — 타일은 놓는다
     const v = view();
     baseTransform();
     if (front) levelTransform(front);
@@ -585,6 +653,56 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     el.dataset.zoom = z.toFixed(2);
     for (const fn of subs.render) { try { fn(); } catch (e) { console.error(e); } }
     if (more) schedule();
+    else if (GEO.image && !gesture) schedulePrefetch();
+  }
+
+  // ---- 한가할 때 미리 받기(이미지 모드만 — VWorld 타일은 약관상 미리 받지 않는다) ----
+  // 멈춰 있을 때(움직임·손짓 없음) requestIdleCallback 으로: ① 한 단계 확대했을 때 보일 칸(가운데부터) ② 지금 단계 화면 둘레 한 줄.
+  // 읽고 디코드까지 해 두면(source.prefetch — drawtiles 가 LRU 로 쥔다) 두 번 탭·두 손가락 확대·끌기에서 바로 선명. 손을 대면 멈춘다.
+  let pfT = 0, pfGen = 0, pfSig = '';
+  const PF_MAX = 12;
+  const ric = typeof requestIdleCallback === 'function' ? fn => requestIdleCallback(fn, { timeout: 1200 }) : fn => setTimeout(fn, 300);
+  const cic = typeof cancelIdleCallback === 'function' ? cancelIdleCallback : clearTimeout;
+  function stopPrefetch() { if (pfT) { cic(pfT); pfT = 0; } pfGen++; }
+  function schedulePrefetch() {
+    if (pfT || !alive || typeof src?.prefetch !== 'function' || !W || !H || viewAnim || inertia || isTyping()) return;
+    if (front && front.pending) return;                                // 지금 보이는 칸이 먼저
+    const sig = `${cx.toFixed(5)},${cy.toFixed(5)},${z.toFixed(3)},${bearing.toFixed(1)},${W}x${H},${front?.z ?? '-'}`;
+    if (sig === pfSig) return;
+    pfT = ric(() => { pfT = 0; pfSig = sig; runPrefetch(); });
+  }
+  async function runPrefetch() {
+    const gen = ++pfGen;
+    const v = view();
+    const want = [];
+    const add = (lz, r, limit) => {
+      const g = r && GEO.grid(lz);
+      if (!g) return;
+      let n = 0;
+      for (const t of tilesIn(r, v, g)) {
+        if (n >= limit) break;
+        if (g.blank?.has(t.y * g.cols + t.x)) continue;
+        if (front && front.z === lz && front.tiles.has(t.key)) continue;
+        want.push(t); n++;
+      }
+    };
+    // ① 확대해 들어갈 때 쓸 단계(지금보다 한 단계 위) — 그 단계를 고르게 되는 확대에서 화면 가운데 칸부터
+    //   미리보기가 덮는 단계(1:1 근처)는 건너뛰고 그 위 단계 — 두 손가락으로 크게 벌렸을 때 바로 선명하게
+    if (GEO.levels) {
+      let lzIn = Math.min(GEO.top, Math.max(GEO.level(Math.min(GEO.zmax, z + 1), null) ?? 0, (front?.z ?? GEO.level(z, null) ?? -1) + 1));
+      let zAt = Math.max(z + 0.5, lzIn - BIAS);                      // 그 단계가 처음 골라지는 확대 근처
+      for (let i = 0; i < 2 && lzIn < GEO.top && !tilesNeeded(lzIn, zAt); i++) { lzIn++; zAt = Math.max(z + 0.5, lzIn - BIAS); }
+      if (lzIn !== front?.z && tilesNeeded(lzIn, zAt)) add(lzIn, tileRange({ ...v, z: zAt }, lzIn, 0), 8);
+    }
+    // ② 지금 단계 화면 둘레 한 줄(끌면 바로 보일 칸)
+    if (front) {
+      const r = tileRange(v, front.z, PAD + GEO.tile);
+      if (r) add(front.z, r, PF_MAX - want.length);
+    }
+    for (const t of want.slice(0, PF_MAX)) {
+      if (gen !== pfGen || !alive || gesture || viewAnim || inertia) return;
+      try { await src.prefetch(t.z, t.x, t.y); stats.prefetched++; } catch { /* 없으면 그만 */ }
+    }
   }
 
   // ---- 알림 ----
@@ -612,6 +730,7 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   function stopMotion() { viewAnim = null; inertia = null; animEndKind = null; }
   function onDown(e) {
     if (e.button > 0 || e.target.closest?.('.lm-compass')) return;
+    stopPrefetch();
     if (!pts.size) rect = el.getBoundingClientRect();
     try { el.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
     const p = local(e);
@@ -788,9 +907,12 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   let ro = null;
   function resized(w, h) {
     if (w === W && h === H) return;
+    const first = !W || !H;
     W = w; H = h;
     if (front) front.range = null;
     if (autoFit && GEO.image && !gesture && w && h) pendingFit = true;   // 아직 손대지 않았으면 새 크기에 다시 맞춘다
+    // 처음 크기를 안 순간(ResizeObserver 는 그리기 직전)에 바로 한 번 그린다 — 다음 프레임까지 빈 상자로 한 번 더 기다리지 않게
+    if (first && w && h && alive) { if (raf) { cancelAnimationFrame(raf); raf = 0; } frame(performance.now()); return; }
     schedule();
   }
   function measure() { const r = el.getBoundingClientRect(); resized(r.width, r.height); }
@@ -934,7 +1056,8 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     GEO = imageGeo(src, BIAS);
     if (sameSize) { const n = GEO.toN(keep); cx = n.x; cy = n.y; } else pendingFit = true;
     dropLevel(back); back = null; dropLevel(front); front = null;
-    if (!baseImg || !sameSize) { if (baseImg) { baseImg.remove(); baseImg = null; } makeBase(); }
+    if (!baseImg || !sameSize) { if (baseImg) { baseImg.remove(); baseImg = null; pvReady = false; } makeBase(); }
+    pfSig = '';
     schedule();
   }
   function fit({ animate = true } = {}) {
@@ -951,6 +1074,7 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
     clearTimeout(wheelT); clearTimeout(errT); clearTimeout(tapT);
+    stopPrefetch();
     ro?.disconnect();
     removeEventListener('online', onOnline);
     dropLevel(front); dropLevel(back);
@@ -960,6 +1084,7 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
   }
   const sub = set => fn => { if (typeof fn === 'function') set.add(fn); return () => set.delete(fn); };
 
+  started = true;
   schedule();
   const api = {
     el,
@@ -994,7 +1119,8 @@ export function liveMap({ center = null, zoom = null, layer = 'Base', key = VWOR
     // 이미지 모드
     setSource, fit, fitZoom,
     setNorth(deg) { north = fin(deg) ? TM.normDeg(deg) : null; schedule(); },
-    _stats: () => ({ ...stats, tiles: (front?.tiles.size || 0) + (back?.tiles.size || 0), frontZ: front?.z ?? null, back: !!back, pending: front?.pending ?? 0, pool: pool.length, imgs: el.querySelectorAll('img.lm-t').length, z, cx, cy, bearing }),
+    // sharp: 지금 확대에 맞는 그림이 다 그려짐(타일 단계가 필요 없으면 미리보기, 필요하면 그 단계 칸이 다 옴) — 측정·시험용
+    _stats: () => ({ ...stats, sharp: !W || !H ? false : GEO.image ? (front ? front.pending === 0 && !back && front.tiles.size > 0 : pvReady) : (!!front && front.pending === 0 && !back), preview: pvReady, tiles: (front?.tiles.size || 0) + (back?.tiles.size || 0), frontZ: front?.z ?? null, back: !!back, pending: front?.pending ?? 0, pool: pool.length, imgs: el.querySelectorAll('img.lm-t').length, z, cx, cy, bearing }),
   };
   Object.defineProperty(el, '__lm', { value: api });                  // 시험용(www/dev) — 화면 코드는 쓰지 않는다
   return api;

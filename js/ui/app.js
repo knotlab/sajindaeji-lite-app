@@ -10,7 +10,10 @@ import { h, toast, snackbar, confirmModal } from './dom.js';
 import { APP_VERSION } from '../config.js';
 
 // 지도(map — 실시간 위치), 도면보관함(drawings 목록 · drawview { id, page, pinId, guideTo } · drawgeo { id, page })
-const SCREENS = ['home', 'day', 'record', 'capture', 'viewer', 'export', 'settings', 'docs', 'docview', 'map', 'drawings', 'drawview', 'drawgeo'];
+// 아래 탭(v0.1.5): 홈(home — 가로로 밀어 날짜) · 내보내기(exporthub — 카톡 보내기·사진대지 엑셀).
+//   예전 'day'·'export' 화면은 등록하지 않는다 — router 가 home { day } · exporthub { from, to } 로 돌린다.
+const SCREENS = ['home', 'record', 'capture', 'viewer', 'exporthub', 'settings', 'docs', 'docview', 'map', 'drawings', 'drawview', 'drawgeo'];
+const TABS = [{ name: 'home', label: '홈', icon: 'home' }, { name: 'exporthub', label: '내보내기', icon: 'share' }];
 const OPTIONAL = new Set(['map', 'drawings', 'drawview', 'drawgeo']);         // 아직 파일이 없을 수 있다 — 없으면 조용히 「준비 중」
 const RESTORE_DELAY = 1500;                                                  // 복구 확인은 첫 화면·첫 탭 뒤로
 const $ = sel => document.querySelector(sel);
@@ -43,6 +46,7 @@ async function step(label, fn) {
 
 function showFatal(e) {
   lite.failed = true;
+  try { lite.tabs?.hide(true); } catch { /* 무시 */ }
   const view = $('#view');
   if (!view) return;
   const msg = e?.name === 'VersionError'
@@ -113,6 +117,18 @@ async function offerRestore(safety, store) {
   }
 }
 
+// 아래 탭 막대 — #view 바로 다음(#app 세로 flex 의 맨 아래, 화면 .dock 은 그 위). 시트(#layer)·스낵바(#snack)는 그 위를 덮는다.
+// 겹치는 화면(스택 2칸 이상)에서는 숨김. 탭 막대가 없어도(모듈 오류) 앱은 돈다 — 뒤로·홈 버튼으로 다닌다
+async function setupTabs() {
+  const mod = await imp('./widgets/tabbar.js');
+  if (typeof mod?.tabBar !== 'function' || typeof router.setTabs !== 'function') return;
+  const bar = mod.tabBar({ tabs: TABS, current: 'home', onPick: name => router.go(name) });
+  bar.hide(true);
+  $('#view')?.after(bar.el);
+  lite.tabs = bar;
+  router.setTabs(TABS.map(t => t.name), { onChange: name => { if (name) { bar.set(name); bar.hide(false); } else bar.hide(true); } });
+}
+
 async function boot() {
   window.addEventListener('unhandledrejection', e => {
     console.error('처리 안 된 비동기 거부', e.reason);
@@ -150,6 +166,7 @@ async function boot() {
 
   // ③ 첫 화면 — 안내(복원 질문·되살린 사진)는 그 위에 띄운다
   router.start({ useHistory: !isNative, minimize: isNative ? () => native.minimizeApp?.() : null });
+  await step('tabs', setupTabs);
   await screensP;
   router.home();
 

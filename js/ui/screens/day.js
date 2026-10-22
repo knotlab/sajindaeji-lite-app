@@ -1,4 +1,6 @@
 // 날짜 화면 `day`(설계서 §6.2) — params { day }
+// v0.1.5: 앱에는 더 등록하지 않는다(router 가 'day' 를 홈 { day } 로 돌린다 — 홈이 가로로 밀어 날짜를 넘긴다).
+//   이 파일은 datePicker·locGroups·locRow(홈·내보내기 탭이 씀)를 내보내는 곳으로 남는다.
 // 기록이 없는 날짜도 연다(review-notes 10: 홈 [다른 날짜 열기] → 이 화면 → [이 날짜에 사진 추가]).
 // ◀ ▶ 는 기록 있는 이전/다음 날로, 가운데 달력 버튼은 아무 날짜로. 목록은 오래된 것이 위(사진대지 순서).
 // '오늘 위치도'(day-locmap, docs/도면보관함-설계.md §5.7): 그 날 묶음들의 핀을 도면·쪽별로 묶어 작은 미리보기(그림 한 장 + 점) + 핀 수 → drawview.
@@ -33,7 +35,7 @@ export function locGroups(M, recs) {
 }
 const groupSig = g => `${g.drawing.name}|${g.drawing.pages?.length}|${g.pg?.w}x${g.pg?.h}|${g.pg?.preview ? 1 : 0}|${g.pins.map(({ p }) => `${p.id}:${p.x},${p.y}`).join(';')}`;
 
-function locRow(g, M, nav) {
+export function locRow(g, M, nav) {
   const th = h('span', { class: 'day-loc-th', 'aria-hidden': 'true' }, icon('drawing', 28));
   const pages = g.drawing.pages?.length || 0;
   const sub = [`핀 ${g.pins.length}개`, pages > 1 ? `${g.page}쪽` : null, g.pins.slice(0, 2).map(({ p }) => p.name).filter(Boolean).join(', ')].filter(Boolean).join(' · ');
@@ -81,7 +83,7 @@ export default {
     const bar = h('div', { class: 'bar' },
       h('button', { type: 'button', class: 'icbtn', 'aria-label': '뒤로', on: { click: () => nav.back() } }, icon('back')),
       h('h1', { text: dayLabel(day) }),
-      h('button', { type: 'button', class: 'barlink', 'data-testid': 'day-export', on: { click: () => nav.go('export', { from: day, to: day }) } }, '내보내기'));
+      h('button', { type: 'button', class: 'barlink', 'data-testid': 'day-export', on: { click: () => nav.go('exporthub', { day }) } }, '내보내기'));
 
     const pick = datePicker(d => { if (d !== day) nav.replace('day', { day: d }); });
     const prevBtn = h('button', { type: 'button', class: 'day-nav-btn prev', 'data-testid': 'day-prev' });

@@ -9,7 +9,7 @@
 import * as store from '../data/store.js';
 import { wmOpts, watermarkLines, wmKey, watermarkLayout, drawWatermark, wmFont, WM_BAND_COLOR, WM_BAR_COLOR } from '../core/watermark.js';
 import { IMG } from '../config.js';
-import { decode, dims, canvasToJpeg } from './image.js';
+import { decode, dims, canvasToJpeg, encodeJpegFast } from './image.js';
 
 const THUMB_W = 480, THUMB_H = 360;                     // 썸네일 칸 4:3 (SPEC §6.4 「4:3 가로 칸으로 통일」)
 const LETTERBOX = '#2B2F33';                            // 4:3 이 아닌 사진의 남는 칸(검정보다 한 단계 밝게 — 칸 경계가 보이게)
@@ -283,7 +283,7 @@ export function viewURL(photoId, { watermark } = {}) {
   });
 }
 
-// 내보내기·공유 JPEG — wmMode 가 off 면 작업본 bytes 그대로, 아니면 작업본에 구워 q0.85
+// 내보내기·공유 JPEG — wmMode 가 off 면 작업본 bytes 그대로, 아니면 작업본에 구워 q0.85(그리기는 메인, 인코딩은 워커 — image.encodeJpegFast)
 export async function exportJpeg(photoId) {
   const { lines, photo } = keyOf(photoId, 'export');
   const b = await store.blob(photoId, 'work');
@@ -292,7 +292,9 @@ export async function exportJpeg(photoId) {
   if (!lines.length) return raw;
   return slot(async () => {
     const img = await decode(raw);
-    try { return canvasToJpeg(drawFull(img, photo, lines), IMG.workQ); } finally { img.close?.(); }
+    let c = null;
+    try { c = drawFull(img, photo, lines); img.close?.(); return await encodeJpegFast(c, IMG.workQ); }
+    finally { img.close?.(); if (c) { c.width = 0; c.height = 0; } }               // 큰 canvas 메모리를 바로 돌려준다
   });
 }
 

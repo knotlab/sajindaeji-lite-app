@@ -5,8 +5,12 @@
 // 자료가 없으면 「자료함이 비어 있어요」 + [자료 올리기](파일 하나면 올리자마자 그 자료로 연다).
 // 글자마다 하는 일: 미리 만들어 둔 소문자 글(문서마다 한 번)에 정규식 하나 — 목록은 한 그림에 한 번, 바뀐 줄만(syncList).
 // 처음 여는 형식이 엔진을 받아야 하면(웹: Cache Storage 'av-engines-v1' 에 없음) 줄에 「처음엔 인터넷 필요」. 앱(APK)은 알 수 없어 미리 받기를 했을 때만 생략.
+// 폴더(v0.1.5): 최근 연 것 아래에 폴더 줄 → 누르면 그 폴더 안(위에 빵 부스러기, 「이 폴더 n개」). 근처·고정·최근은 맨 위에서만, 찾기는 전체.
+//   폴더 안에서 올리면 그 폴더에 들어간다.
 import { h, icon, openSheet, pickFiles, syncList } from '../dom.js';
 import * as D from '../../data/docs.js';
+import * as FD from '../../data/folders.js';
+import { folderBar, folderRows } from './folderbar.js';
 import * as gps from '../../services/gps.js';
 import * as store from '../../data/store.js';
 import * as N from '../../platform/native.js';
@@ -194,7 +198,14 @@ export function pickDoc({ title = '자료 열기', current = null } = {}) {
         h('p', { class: 'dp-empty-s', text: '도면·엑셀·PDF·한글 파일을 올리면 바로 열어 볼 수 있어요' }),
         emptyUp);
       empty.hidden = true;
-      const list = h('div', { class: 'dp-list' }, empty, ...Object.values(S).map(s => s.el), none);
+      // 폴더 탐색 — at = 보고 있는 폴더(null = 맨 위)
+      let at = null, fReady = false;
+      const enter = id => { at = FD.resolveFolder(id); fbar.set(at); frows.set(at); draw(); list.scrollTop = 0; };
+      const fbar = folderBar({ scope: 'docs', folderId: null, onGo: enter });
+      const frows = folderRows({ scope: 'docs', parentId: null, onOpen: enter, items: () => D.docs() });
+      const fsec = h('section', { class: 'dp-group dp-folders', 'data-section': 'folders' }, fbar.el, frows.el);
+      offs.push(fbar.destroy, frows.destroy);
+      const list = h('div', { class: 'dp-list' }, empty, S.fresh.el, S.near.el, S.pinned.el, S.recent.el, fsec, S.all.el, S.found.el, none);
       const body = h('div', { class: 'dp-body', 'data-testid': 'doc-picker' }, header, search, status, list);
       body.dataset.state = 'loading';
 
@@ -210,34 +221,40 @@ export function pickDoc({ title = '자료 열기', current = null } = {}) {
         search.hidden = isEmpty;
         upBtn.hidden = isEmpty;                                                        // 빈 상태에선 가운데 큰 버튼 하나만
         body.dataset.state = isEmpty ? 'empty' : q.trim() ? 'search' : 'list';
-        if (isEmpty) { for (const s of Object.values(S)) s.set('', [], current, pick); none.hidden = true; lastFound = []; return; }
+        if (isEmpty) { for (const s of Object.values(S)) s.set('', [], current, pick); none.hidden = true; fsec.hidden = true; lastFound = []; return; }
         const match = makeMatcher(q);
         if (match) {
           const found = all.filter(d => match(hayOf(d)))
             .sort((a, b) => (b.pinned - a.pinned) || a.name.localeCompare(b.name, 'ko', { numeric: true }));
           lastFound = found;
+          fsec.hidden = true;                                                          // 찾기는 폴더와 상관없이 전체
           for (const k of ['fresh', 'near', 'pinned', 'recent', 'all']) S[k].set('', [], current, pick);
           S.found.set(`찾은 자료 ${found.length}개`, found.map(d => ({ d })), current, pick);
           none.hidden = !!found.length;
           none.textContent = '맞는 자료가 없어요. 다른 말로 찾아 보세요';
           return;
         }
-        lastFound = all;
-        none.hidden = true;
         S.found.set('', [], current, pick);
+        fsec.hidden = !at && !frows.size();                                           // 맨 위에 폴더가 없으면 빈 구역을 두지 않는다
+        const top = !at;                                                               // 근처·고정·최근은 맨 위에서만
         const byId = new Map(all.map(d => [d.id, d]));
-        const fresh = freshIds.map(id => byId.get(id)).filter(Boolean);
+        const fresh = top ? freshIds.map(id => byId.get(id)).filter(Boolean) : [];
         S.fresh.set('방금 올림', fresh.map(d => ({ d })), current, pick);
-        const near = pos ? D.nearby(pos, { radius: NEAR_R }).slice(0, NEAR_MAX) : [];
+        const near = top && pos ? D.nearby(pos, { radius: NEAR_R }).slice(0, NEAR_MAX) : [];
         S.near.set('지금 위치 근처', near.map(x => ({ d: x.doc, extra: fmtM(x.dist) })), current, pick);
-        const pinned = all.filter(d => d.pinned);
+        const pinned = top ? all.filter(d => d.pinned) : [];
         S.pinned.set('고정', pinned.map(d => ({ d })), current, pick);
         const shown = new Set([...near.map(x => x.doc.id), ...pinned.map(d => d.id)]);
-        const recent = all.filter(d => d.lastOpenedAt && !shown.has(d.id))
-          .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).slice(0, RECENT_MAX);
+        const recent = top ? all.filter(d => d.lastOpenedAt && !shown.has(d.id))
+          .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).slice(0, RECENT_MAX) : [];
         S.recent.set('최근 연 것', recent.map(d => ({ d })), current, pick);
         const byName = [...all].sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
-        S.all.set(`전체 ${all.length}개`, byName.map(d => ({ d })), current, pick);
+        const hasF = fReady && FD.allFolders('docs').length > 0;
+        const here = hasF ? FD.itemsIn('docs', at, byName) : byName;
+        lastFound = here;
+        S.all.set(at ? `이 폴더 ${here.length}개` : hasF ? `폴더 밖 자료 ${here.length}개` : `전체 ${all.length}개`, here.map(d => ({ d })), current, pick);
+        none.hidden = !(at && !here.length && !frows.size());
+        if (!none.hidden) none.textContent = '빈 폴더예요. 여기서 올리면 이 폴더에 들어가요';
       }
 
       // 올리기 — 탭 안에서 바로 파일 고르기(지연 호출이면 브라우저가 막는다)
@@ -255,6 +272,7 @@ export function pickDoc({ title = '자료 열기', current = null } = {}) {
               site,
               onProgress: (i, n) => { if (n > 1 && i < n) status.textContent = `올리는 중… ${i + 1}/${n}`; },
             });
+            if (at && added.length) await FD.placeItems('docs', added.map(d => d.id), at).catch(err => console.warn('올린 자료를 폴더에 못 넣었다', err));
             if (added.length === 1 && !failed.length) { pick(added[0].id); return; }     // 하나면 바로 그 자료로
             freshIds = [...added.map(d => d.id), ...freshIds.filter(id => !added.some(d => d.id === id))];
             status.textContent = failed.length
@@ -270,13 +288,14 @@ export function pickDoc({ title = '자료 열기', current = null } = {}) {
         });
       }
 
-      // 자료함 준비 → 그리기, 바뀌면 다시(한 그림에 한 번)
-      D.ready().then(() => { ready = true; draw(); }, err => {
+      // 자료함·폴더 준비 → 그리기, 바뀌면 다시(한 그림에 한 번). 폴더 DB 를 못 열면 폴더 없이
+      const fP = FD.ready().then(() => true, err => { console.warn('폴더를 열지 못했어요', err); return false; });
+      Promise.all([D.ready(), fP]).then(([, okF]) => { fReady = okF; if (okF) offs.push(FD.onFolders(later)); ready = true; draw(); }, err => {
         console.error('자료함을 열지 못했어요', err);
         body.dataset.state = 'error';
         none.hidden = false; none.textContent = '자료함을 열지 못했어요. 앱을 다시 열어 주세요';
       });
-      offs.push(D.onDocs(later));
+      offs.push(D.onDocs(() => { later(); frows.refresh(); }));
       // 위치가 바뀌면 근처만 바뀐다 — 보이는 자리(좌표)가 달라졌을 때만
       offs.push(safe(() => gps.on(s => {
         const p = s?.pos || null;

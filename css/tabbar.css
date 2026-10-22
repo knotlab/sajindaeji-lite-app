@@ -1,0 +1,32 @@
+/* 아래 탭 막대(widgets/tabbar.js) — #app 의 마지막 자식(#view 다음). 높이 56px + 아래 안전 영역.
+   고른 탭: 검정 글자·굵게 + 위쪽 2px 검정 막대(노랑 아님 — 노랑은 화면의 주 행동 하나). 안 고른 탭: 보조 글자색 #474C52(햇빛 가독성). */
+:root{--tabbar-h:56px}
+
+.tabbar{flex:0 0 auto;display:flex;position:relative;z-index:6;
+  padding:0 8px var(--safe-b);background:var(--paper);border-top:1px solid var(--soft);
+  -webkit-user-select:none;user-select:none}
+.tabbar[hidden]{display:none !important}
+.tabbar-btn{position:relative;flex:1 1 0;min-width:0;height:var(--tabbar-h);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  border-radius:0;color:var(--ink2);font-size:13px;font-weight:700;line-height:1.2;text-align:center;touch-action:manipulation}
+.tabbar-btn::before{content:"";position:absolute;left:20%;right:20%;top:-1px;height:2px;border-radius:0 0 2px 2px;background:transparent}
+.tabbar-btn[aria-current="page"]{color:var(--ink);font-weight:800}
+.tabbar-btn[aria-current="page"]::before{background:var(--ink)}
+.tabbar-btn[aria-current="page"] .ic{stroke-width:2.4}
+/* 누름 표시 — 닿는 순간(.down)과 :active 둘 다 */
+.tabbar-btn.down,.tabbar-btn:active{background:rgba(0,0,0,.07)}
+.tabbar-t{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tabbar-ic{position:relative;display:block}
+.tabbar-badge{position:absolute;left:calc(100% - 6px);top:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
+  background:var(--ink);color:#fff;font-size:12px;font-weight:800;line-height:18px;text-align:center;white-space:nowrap}
+
+/* 탭 막대가 보이는 동안: 탭 막대가 아래 안전 영역을 맡으니 화면 .dock 은 빼고, 스낵바·토스트는 탭 막대 위로 */
+html[data-tabbar="on"] .screen .dock{padding-bottom:12px}
+html[data-tabbar="on"] #snack{bottom:calc(var(--snack-lift,0px) + 16px + var(--tabbar-h) + var(--safe-b))}
+
+/* 어두운 화면(촬영 등)은 겹쳐 뜨는 화면이라 탭 막대가 숨지만, 혹시 보일 때를 위해 */
+#app.dark .tabbar{background:var(--dark-2);border-top-color:var(--dark-line)}
+#app.dark .tabbar-btn{color:var(--dark-ink2)}
+#app.dark .tabbar-btn[aria-current="page"]{color:#fff}
+#app.dark .tabbar-btn[aria-current="page"]::before{background:#fff}
+
+@media (prefers-reduced-motion:reduce){.tabbar-btn{transition:none}}

@@ -238,7 +238,8 @@ function cleanFolder(f) {
 function cleanPlace(p) {
   if (!p || typeof p !== 'object' || !SCOPES.includes(p.scope) || typeof p.itemId !== 'string' || !p.itemId) return null;
   if (p.key !== placeKey(p.scope, p.itemId)) return null;
-  return { key: p.key, scope: p.scope, itemId: p.itemId, folderId: isFolderId(p.folderId) ? p.folderId : null, updatedAt: num(p.updatedAt) };
+  const gone = p.gone === true;                           // 영구 삭제한 자료의 묘비(옛 백업을 합쳐도 배치가 되살아나지 않게)
+  return { key: p.key, scope: p.scope, itemId: p.itemId, folderId: gone ? null : isFolderId(p.folderId) ? p.folderId : null, updatedAt: num(p.updatedAt), ...(gone ? { gone: true } : {}) };
 }
 // 둘 중 새것(updatedAt) — 같으면 이 기기 것. → { folders: 바뀔 것, places: 바뀔 것, added, updated, skipped }
 export function mergeFolderDump(cur = { folders: [], places: [] }, inc = {}) {
@@ -271,7 +272,7 @@ let pcache = new Map();          // key → Place(얼림)
 let idx = indexFolders([]);
 let queue = Promise.resolve();
 const subs = new Set();
-const pend = { folders: false, places: false };
+const pend = { folders: false, places: false, init: false };
 let notifyQueued = false;
 
 const uid = () => 'f_' + Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(36).padStart(2, '0')).join('').slice(0, 8);
@@ -331,12 +332,13 @@ const write = fn => ready().then(() => serial(fn));
 function changed(what) {
   if (what.folders) pend.folders = true;
   if (what.places) pend.places = true;
+  if (what.init) pend.init = true;
   if (notifyQueued) return;
   notifyQueued = true;
   queueMicrotask(() => {
     notifyQueued = false;
-    const ev = { folders: pend.folders, places: pend.places };
-    pend.folders = pend.places = false;
+    const ev = { folders: pend.folders, places: pend.places, init: pend.init };   // init: 처음 열기(바뀐 것 아님 — 백업·미러는 건너뛴다)
+    pend.folders = pend.places = pend.init = false;
     for (const fn of [...subs]) { try { fn(ev); } catch (e) { console.error(e); } }
   });
 }
@@ -372,20 +374,26 @@ export function initFolders(opts = {}) {
   return initP;
 }
 export function ready() { return initP || initFolders(); }
+// 이미 열려 캐시가 찼는지(백업이 폴더 DB 를 새로 열지 않고 읽을 수 있는지 — 떠날 때 백업은 기다릴 틈이 없다)
+let opened = false;
+export const isOpen = () => opened;
 async function initImpl({ dbName: name, now = Date.now() } = {}) {
   if (name && name !== dbName) { dbName = name; dbP = null; }
   const [fl, pl] = await run('readonly', (fs, ps) => Promise.all([reqP(fs.getAll()), reqP(ps.getAll())]));
   fcache = new Map(fl.map(f => [f.id, Object.freeze(f)]));
   pcache = new Map(pl.map(p => [p.key, Object.freeze(p)]));
   idx = indexFolders([...fcache.values()]);
+  opened = true;
   // 30일 지난 묘비 비우기 — 아직 그 묘비를 부모로 둔 것(합치기로 들어온 것)이 있으면 남긴다
   const old = [...fcache.values()].filter(f => f.deletedAt && now - f.deletedAt > TOMB_MS
     && ![...fcache.values()].some(x => x.parentId === f.id) && ![...pcache.values()].some(p => p.folderId === f.id));
-  if (old.length) await serial(() => commit({ dropFolders: old.map(f => f.id) })).catch(e => console.warn('지난 폴더 묘비를 비우지 못했어요', e));
-  changed({ folders: true, places: true });
+  // 배치 묘비(영구 삭제한 자료)도 30일 뒤 비운다
+  const oldPl = [...pcache.values()].filter(p => p.gone && now - num(p.updatedAt) > TOMB_MS).map(p => p.key);
+  if (old.length || oldPl.length) await serial(() => commit({ dropFolders: old.map(f => f.id), dropPlaces: oldPl })).catch(e => console.warn('지난 폴더 묘비를 비우지 못했어요', e));
+  changed({ folders: true, places: true, init: true });
 }
 
-// fn({ folders: bool, places: bool }) — 한 틱에 한 번. 해제 함수를 돌려준다
+// fn({ folders: bool, places: bool, init: bool }) — 한 틱에 한 번(init = 처음 열기). 해제 함수를 돌려준다
 export function onFolders(fn) { subs.add(fn); return () => { subs.delete(fn); }; }
 
 // ---- 읽기(동기) ----
@@ -500,12 +508,18 @@ export function placeItems(scope, itemIds, folderId, now = Date.now()) {
   });
 }
 
-// 자료·도면이 영구 삭제될 때(휴지통 비우기·purge) — 배치 기록을 지운다. itemId 하나나 목록
-export function forget(scope, itemId) {
+// 자료·도면이 영구 삭제될 때(휴지통 비우기·purge) — 배치를 묘비 { folderId:null, gone:true } 로 바꾼다(30일 뒤 비움).
+//   그냥 지우면 옛 백업(파일 14세대·ZIP)을 합칠 때 배치가 되살아나 빈 폴더가 「안에 1개」로 보였다. itemId 하나나 목록
+export function forget(scope, itemId, now = Date.now()) {
   return write(async () => {
-    const keys = (Array.isArray(itemId) ? itemId : [itemId]).map(x => placeKey(scope, idOf(x))).filter(k => pcache.has(k));
-    await commit({ dropPlaces: keys });
-    return keys.length;
+    const list = [];
+    for (const x of Array.isArray(itemId) ? itemId : [itemId]) {
+      const id = idOf(x), key = placeKey(scope, id), cur = pcache.get(key);
+      if (!cur || cur.gone) continue;                                   // 배치가 없던 자료는 묘비도 필요 없다(옛 백업에도 없다)
+      list.push({ key, scope, itemId: id, folderId: null, gone: true, updatedAt: Math.max(now, num(cur.updatedAt) + 1) });
+    }
+    await commit({ places: list });
+    return list.length;
   });
 }
 
@@ -523,3 +537,11 @@ export function mergeFolders(json) {
 }
 
 export function usage() { return { folders: idx.eff.size, places: pcache.size }; }
+
+// 시험용 — 닫고 비운다(다음 ready() 가 다시 연다. isOpen() 은 false — 「이 실행에서 아직 안 연」 상태 흉내)
+export async function _reset() {
+  const p = dbP;
+  dbP = null; initP = null; opened = false;
+  fcache = new Map(); pcache = new Map(); idx = indexFolders([]);
+  if (p) { try { (await p).close(); } catch { /* 이미 닫힘 */ } }
+}

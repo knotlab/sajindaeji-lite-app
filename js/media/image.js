@@ -260,6 +260,23 @@ export function frameJpegs(bitmap, { turns = 0, aspect = null, q = 0.92, pvMax =
   return { preview, full, prepared };
 }
 
+// 다 그린 canvas → JPEG bytes. 워커가 되면 그림만 넘겨(createImageBitmap — 복사, 메인 수 ms) 워커가 인코딩한다
+//   (내보내기·카톡 보내기 굽기: 메인 toDataURL 이 1920×1440 장당 60~70ms, 4배 늦춘 폰 약 250ms 화면을 막았다 — v0.1.5 검토).
+//   워커가 없거나 실패하면 예전 경로(메인 toDataURL — toBlob 금지 규칙 그대로)
+export async function encodeJpegFast(canvas, q) {
+  if (forced !== 'main' && workerUsable() && canvas?.width && canvas?.height) {
+    try {
+      const bmp = await createImageBitmap(canvas);
+      const r = await wkCall({ op: 'encode', bitmap: bmp, q }, 60000, { transfer: [bmp] });
+      return new Uint8Array(await r.blob.arrayBuffer());
+    } catch (e) {
+      if (forced === 'worker') throw e;
+      console.warn('워커 인코딩 실패 — 메인 스레드로 해요', e);
+    }
+  }
+  return canvasToJpeg(canvas, q);
+}
+
 // 셔터 순간 미리보기 — video(또는 그림)를 돌리고 잘라 긴 변 maxSide 로 작게 그린 JPEG Blob(약 320px, 몇 ms)
 export function snapshot(src, { turns = 0, aspect = null, maxSide = 320, q = 0.7 } = {}) {
   const { w, h } = dims(src);

@@ -3,9 +3,12 @@
 // 위: 검색칸(이름·태그·핀 이름, 치는 중인 한글도 — docpicker.makeMatcher), 아래 목록만 스크롤:
 //   지금 여기(위치 맞춘 도면 안·50m 안, gps 가 켜져 있을 때) → 고정 → 최근 연 것(최대 5) → 전체(이름순).
 // 비었으면 「도면보관함이 비어 있어요」 + [도면 올리기](하나면 올리자마자 그 도면으로 — 그림은 뒤에서 만든다).
+// 폴더(v0.1.5): 최근 연 것 아래에 폴더 줄 → 누르면 그 폴더 안(빵 부스러기, 「이 폴더 n개」). 지금 여기·고정·최근은 맨 위에서만, 찾기는 전체.
 import { h, icon, openSheet, syncList, pickFiles } from '../dom.js';
 import { uploadFiles, ACCEPT } from '../screens/drawings.js';
 import * as D from '../../data/drawings.js';
+import * as FD from '../../data/folders.js';
+import { folderBar, folderRows } from './folderbar.js';
 import * as DT from '../../media/drawtiles.js';
 import * as gps from '../../services/gps.js';
 import * as G from '../../core/georef.js';
@@ -32,7 +35,7 @@ function makeRow(d, cur, extra, onPick) {
   return h('button', {
     type: 'button', class: ['dp-row', isCur && 'cur'], 'data-testid': 'drawing-picker-row', 'data-id': d.id,
     'aria-label': `${d.name}${isCur ? ', 보는 중' : ''}`, 'aria-current': isCur ? 'true' : null, title: d.name,
-    onclick: () => onPick(d.id),
+    onclick: () => onPick(d.id), onpointerdown: () => DT.warm(d.id),
   },
   h('span', { class: 'dp-ico k-drawing', 'aria-hidden': 'true' }, icon('plan', 22)),
   h('span', { class: 'dp-main' },
@@ -95,7 +98,13 @@ export function pickDrawing({ title = '도면 고르기', current = null } = {})
         h('p', { class: 'dp-empty-t', text: '도면보관함이 비어 있어요' }),
         h('p', { class: 'dp-empty-s', text: 'PDF·DWG·DXF·도면 그림을 올리면 핀을 찍고 길을 찾을 수 있어요' }),
         emptyUp);
-      const list = h('div', { class: 'dp-list' }, empty, ...Object.values(S).map(s => s.el), none);
+      let at = null, fReady = false;
+      const enter = id => { at = FD.resolveFolder(id); fbar.set(at); frows.set(at); draw(); list.scrollTop = 0; };
+      const fbar = folderBar({ scope: 'drawings', folderId: null, onGo: enter });
+      const frows = folderRows({ scope: 'drawings', parentId: null, onOpen: enter, items: () => D.drawings() });
+      const fsec = h('section', { class: 'dp-group dp-folders', 'data-section': 'folders' }, fbar.el, frows.el);
+      offs.push(fbar.destroy, frows.destroy);
+      const list = h('div', { class: 'dp-list' }, empty, S.here.el, S.pinned.el, S.recent.el, fsec, S.all.el, S.found.el, none);
       const body = h('div', { class: 'dp-body', 'data-testid': 'drawing-picker' }, header, search, status, list);
       body.dataset.state = 'loading';
       let ready = false, pos = safe(() => gps.snapshot()?.pos, null) || null;
@@ -108,28 +117,35 @@ export function pickDrawing({ title = '도면 고르기', current = null } = {})
         const isEmpty = !all.length;
         empty.hidden = !isEmpty; search.hidden = isEmpty; upBtn.hidden = isEmpty;
         body.dataset.state = isEmpty ? 'empty' : q.trim() ? 'search' : 'list';
-        if (isEmpty) { for (const s of Object.values(S)) s.set('', [], current, pick); none.hidden = true; lastFound = []; return; }
+        if (isEmpty) { for (const s of Object.values(S)) s.set('', [], current, pick); none.hidden = true; fsec.hidden = true; lastFound = []; return; }
         const match = makeMatcher(q);
         if (match) {
           const found = all.filter(d => match(hayOf(d))).sort((a, b) => (b.pinned - a.pinned) || a.name.localeCompare(b.name, 'ko', { numeric: true }));
           lastFound = found;
+          fsec.hidden = true;                                                          // 찾기는 폴더와 상관없이 전체
           for (const k of ['here', 'pinned', 'recent', 'all']) S[k].set('', [], current, pick);
           S.found.set(`찾은 도면 ${found.length}개`, found.map(d => ({ d })), current, pick);
           none.hidden = !!found.length; none.textContent = '맞는 도면이 없어요. 다른 말로 찾아 보세요';
           return;
         }
-        lastFound = all; none.hidden = true;
         S.found.set('', [], current, pick);
-        const here = pos ? D.drawingsAt(pos, { marginM: 50 }) : [];
+        fsec.hidden = !at && !frows.size();                                           // 맨 위에 폴더가 없으면 빈 구역을 두지 않는다
+        const top = !at;                                                               // 지금 여기·고정·최근은 맨 위에서만
+        const here = top && pos ? D.drawingsAt(pos, { marginM: 50 }) : [];
         S.here.set('지금 여기', here.map(x => ({ d: x.drawing, extra: x.outsideM > 0 ? `도면 밖 ${G.fmtM(x.outsideM)}` : '지금 도면 안' })), current, pick);
         const shown = new Set(here.map(x => x.drawing.id));
-        const pinned = all.filter(d => d.pinned && !shown.has(d.id));
+        const pinned = top ? all.filter(d => d.pinned && !shown.has(d.id)) : [];
         S.pinned.set('고정', pinned.map(d => ({ d })), current, pick);
         for (const d of pinned) shown.add(d.id);
-        const recent = all.filter(d => d.lastOpenedAt && !shown.has(d.id)).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).slice(0, RECENT_MAX);
+        const recent = top ? all.filter(d => d.lastOpenedAt && !shown.has(d.id)).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt).slice(0, RECENT_MAX) : [];
         S.recent.set('최근 연 것', recent.map(d => ({ d })), current, pick);
         const byName = [...all].sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
-        S.all.set(`전체 ${all.length}개`, byName.map(d => ({ d })), current, pick);
+        const hasF = fReady && FD.allFolders('drawings').length > 0;
+        const inHere = hasF ? FD.itemsIn('drawings', at, byName) : byName;
+        lastFound = inHere;
+        S.all.set(at ? `이 폴더 ${inHere.length}개` : hasF ? `폴더 밖 도면 ${inHere.length}개` : `전체 ${all.length}개`, inHere.map(d => ({ d })), current, pick);
+        none.hidden = !(at && !inHere.length && !frows.size());
+        if (!none.hidden) none.textContent = '빈 폴더예요. 여기서 올리면 이 폴더에 들어가요';
       }
 
       let uploading = false;
@@ -137,7 +153,7 @@ export function pickDrawing({ title = '도면 고르기', current = null } = {})
         if (uploading) return;
         // 탭 안에서 바로 파일 고르기(지연 호출이면 브라우저가 막는다) — drawings 화면의 올리기와 같은 규칙
         pickFiles({ accept: ACCEPT, multiple: true })
-          .then(files => uploadFiles(files, { onStatus: t => { status.hidden = !t; status.textContent = t; } }))
+          .then(files => uploadFiles(files, { folderId: at, onStatus: t => { status.hidden = !t; status.textContent = t; } }))
           .then(added => {
             if (!added?.length || picked !== null) return;
             if (added.length === 1) { pick(added[0].id); return; }
@@ -147,11 +163,12 @@ export function pickDrawing({ title = '도면 고르기', current = null } = {})
         uploading = true; upBtn.disabled = true; emptyUp.disabled = true;
       }
 
-      D.ready().then(() => { ready = true; draw(); }, err => {
+      const fP = FD.ready().then(() => true, err => { console.warn('폴더를 열지 못했어요', err); return false; });
+      Promise.all([D.ready(), fP]).then(([, okF]) => { fReady = okF; if (okF) offs.push(FD.onFolders(later)); ready = true; draw(); }, err => {
         console.error('도면보관함을 열지 못했어요', err);
         body.dataset.state = 'error'; none.hidden = false; none.textContent = '도면보관함을 열지 못했어요. 앱을 다시 열어 주세요';
       });
-      offs.push(D.onDrawings(later), DT.onBuild(later));
+      offs.push(D.onDrawings(() => { later(); frows.refresh(); }), DT.onBuild(later));
       offs.push(safe(() => gps.on(s => {
         const p = s?.pos || null;
         if (!p === !pos && (!p || (p.lat === pos.lat && p.lng === pos.lng))) return;

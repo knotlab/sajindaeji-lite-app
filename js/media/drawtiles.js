@@ -55,17 +55,42 @@ export function sizeLimits() {
 const localMeta = new Map();           // 'id:page' → tiles
 export function tilesMeta(id, page) { return D.pageOf(id, page)?.tiles || localMeta.get(`${id}:${page}`) || null; }
 export function tilesReady(id, page) { return !!tilesMeta(id, page)?.ready; }
-export async function tileUrl(id, page, z, x, y) {
+// 그 칸이 저장돼 있을 수 있나(목록표로 — 파일을 열지 않고 빈 칸·아직 안 만든 칸을 거른다)
+function tileExists(id, page, z, x, y) {
   const t = tilesMeta(id, page);
   const l = t?.levels?.[z];
-  if (!l || z > (t.upto ?? -1) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= l.cols || y >= l.rows) return null;
+  if (!l || z > (t.upto ?? -1) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= l.cols || y >= l.rows) return false;
   if (l.blank?.length) {
     if (!l._b) Object.defineProperty(l, '_b', { value: new Set(l.blank), enumerable: false });
-    if (l._b.has(y * l.cols + x)) return null;
+    if (l._b.has(y * l.cols + x)) return false;
   }
-  return D.tileSrc(id, page, z, x, y).catch(() => null);
+  return true;
 }
+export async function tileUrl(id, page, z, x, y) {
+  if (!tileExists(id, page, z, x, y)) return null;
+  const k = memKey(id, page, `${z}/${x}/${y}`);
+  const hit = lruGet(urlMem, k);
+  if (hit) return hit;
+  let p = urlWait.get(k);                                             // 같은 칸을 동시에 두 번 읽지 않게
+  if (!p) {
+    p = readTile(id, page, z, x, y).then(b => {
+      if (!b) return null;
+      const u = URL.createObjectURL(b);
+      lruSet(urlMem, k, u, 0);
+      return u;
+    }).catch(() => null).finally(() => urlWait.delete(k));
+    urlWait.set(k, p);
+  }
+  return p;
+}
+// 이미 읽어 둔 칸이면 바로(동기) — 엔진이 첫 그림에 기다림 없이 깐다. 없으면 null
+export function tileUrlNow(id, page, z, x, y) { return tileExists(id, page, z, x, y) ? lruGet(urlMem, memKey(id, page, `${z}/${x}/${y}`)) : null; }
+
 // livemap 이미지 모드 source — 쪽 크기를 정한 뒤부터(미리보기 단계) 보인다
+//   previewNow() — 디코드까지 끝난 미리보기 <img>(메모리에 남겨 둔 것) | null : 두 번째 열기는 이것으로 첫 그림에 바로
+//   thumbNow() — 맨 아래 단계 타일(목록 썸네일과 같은 그림) 주소 | null : 미리보기가 풀리기 전 잠깐 깔 흐린 바닥
+//   tileNow(z,x,y) — 읽어 둔 타일 주소(동기) | null · prefetch(z,x,y) — 한가할 때 미리 읽고 풀어 두기
+//   keep(z,x,y,img) — 다 그려진 칸 <img> 를 맡김(디코드된 채 LRU) · take(z,x,y) — 맡긴·미리 푼 <img> 를 꺼냄 | null
 export function tileSource(id, page = 1) {
   const pg = D.pageOf(id, page);
   if (!pg?.w || !pg?.h) return null;
@@ -73,21 +98,226 @@ export function tileSource(id, page = 1) {
   return {
     kind: 'image', w: pg.w, h: pg.h, tileSize: t?.tileSize || 512, levels: t?.levels?.length ? t.levels : null, upto: t?.upto ?? -1,
     tile: (z, x, y) => tileUrl(id, page, z, x, y),
-    preview: pg.preview ? () => D.previewSrc(id, page).catch(() => null) : null,
+    tileNow: (z, x, y) => tileUrlNow(id, page, z, x, y),
+    prefetch: (z, x, y) => prefetchTile(id, page, z, x, y),
+    keep: (z, x, y, im) => keepTile(id, page, z, x, y, im),
+    take: (z, x, y) => takeTile(id, page, z, x, y),
+    preview: pg.preview ? () => previewImg(id, page).then(im => im?.src || null) : null,
+    previewImg: pg.preview ? () => previewImg(id, page) : null,
+    previewNow: pg.preview ? () => previewNow(id, page) : null,
+    thumbNow: () => tileUrlNow(id, page, 0, 0, 0),
     previewW: pg.preview?.w || 0, previewH: pg.preview?.h || 0, bg: '#ffffff',
     sig: `${pg.w}x${pg.h}|${t?.upto ?? -1}|${t?.ready ? 1 : 0}|${t?.at || 0}|${pg.preview ? 1 : 0}`,
   };
 }
-export function releaseUrls() { /* 주소는 data/drawings.js 가 400개까지 기억하고 넘치면 놓는다 */ }
+export function releaseUrls(id, page) { if (id) dropMem(id, page ?? null); }
 // → 지운 타일 수(목록표 기준 — 빈 칸 빼고)
 export async function removeTiles(id, page) {
   checkArgs(id, page);
   const t = tilesMeta(id, page);
   const n = t?.levels ? t.levels.reduce((s, l) => s + l.cols * l.rows - (l.blank?.length || 0), 0) : 0;
   localMeta.delete(`${id}:${page}`);
+  dropMem(id, page);
   await D.clearTiles(id, page);
   return n;
 }
+
+// ---- 메모리에 남겨 두기(최근 연 도면 — 두 번째 열기는 파일을 다시 열지 않고 첫 그림에) ----
+// 타일 주소(objectURL — OPFS 파일을 가리킬 뿐이라 메모리를 거의 안 먹는다): 최근 URL_MEM 개(LRU)
+// 미리보기 <img>(디코드 끝난 것 — 긴 변 2400 이면 장당 약 16MB): 기기 메모리에 맞춘 바이트 상한(LRU)
+// 디코드된 타일 <img>(화면에서 뺀 칸·한가할 때 미리 푼 주변·한 단계 위): 바이트 상한(LRU, 512² 한 장 약 1MB)
+// 무효화: 그 쪽 그림을 다시 만들기 시작할 때·타일을 지울 때·도면이 지워지거나 쪽 크기·미리보기 크기가 바뀔 때(onDrawings)
+const URL_MEM = 600;
+function decBudget() {
+  const mem = Number(globalThis.navigator?.deviceMemory) || 4;
+  return mem >= 8 ? 64e6 : mem >= 4 ? 40e6 : 12e6;
+}
+function pvBudget() {
+  const mem = Number(globalThis.navigator?.deviceMemory) || 4;
+  return mem >= 8 ? 96e6 : mem >= 4 ? 48e6 : 20e6;
+}
+const urlMem = new Map();              // key → { v:url, bytes }
+const urlWait = new Map();             // key → Promise<url|null>
+const pvMem = new Map();               // 'id|page' → { v:{ img, sig }, bytes }
+const pvWait = new Map();              // 'id|page' → Promise<img|null>
+const decMem = new Map();              // key → { v:img, bytes }
+let pvBytes = 0, decBytes = 0;
+const memKey = (id, page, rest) => `${id}|${page}|${rest}`;
+function lruGet(m, k) { const e = m.get(k); if (!e) return null; m.delete(k); m.set(k, e); return e.v; }
+function lruSet(m, k, v, bytes) {
+  const old = m.get(k);
+  if (old) { m.delete(k); freeEntry(m, k, old); }
+  m.set(k, { v, bytes });
+  if (m === pvMem) pvBytes += bytes;
+  else if (m === decMem) decBytes += bytes;
+  trim(m);
+}
+function freeEntry(m, k, e) {
+  if (m === urlMem) { try { URL.revokeObjectURL(e.v); } catch { /* 무시 */ } }
+  else if (m === pvMem) { pvBytes -= e.bytes; const im = e.v.img; if (im && !im.isConnected) { try { URL.revokeObjectURL(im.src); } catch { /* 무시 */ } im.removeAttribute('src'); } }
+  else if (m === decMem) decBytes -= e.bytes;                         // 타일 주소는 urlMem 이 쥔다 — 풀어 둔 그림만 놓는다
+}
+function trim(m) {
+  const over = () => (m === urlMem ? m.size > URL_MEM : m === decMem ? decBytes > decBudget() : pvBytes > pvBudget() && m.size > 1);
+  for (const [k, e] of m) {
+    if (!over()) break;
+    if (m === pvMem && e.v.img?.isConnected) continue;               // 지금 화면에 깔린 미리보기는 남긴다
+    m.delete(k); freeEntry(m, k, e);
+  }
+}
+// 그 도면(쪽) 것 모두 놓기
+function dropMem(id, page = null) {
+  const pre = page == null ? `${id}|` : `${id}|${page}|`;
+  for (const m of [urlMem, decMem]) for (const [k, e] of [...m]) if (k.startsWith(pre)) { m.delete(k); freeEntry(m, k, e); }
+  for (const [k, e] of [...pvMem]) if (`${k}|`.startsWith(pre)) { pvMem.delete(k); freeEntry(pvMem, k, e); }
+  for (const m of [urlWait, pvWait]) for (const k of [...m.keys()]) if (`${k}|`.startsWith(pre)) m.delete(k);
+  if (page == null) { memPages.delete(id); dirMem.delete(id); } else memPages.get(id)?.delete(page);
+}
+// 도면이 바뀌면(지움·쪽 크기·미리보기) 그 도면 것만 맞춰 놓는다 — 처음 쓸 때 한 번 구독
+let memWatch = false;
+function watchMem() {
+  if (memWatch) return;
+  memWatch = true;
+  D.onDrawings(ev => {
+    for (const id of ev.drawings) {
+      const d = D.drawing(id);
+      if (!d || d.deletedAt || d.missingFile) { if (memPages.has(id)) dropMem(id); continue; }
+      for (const page of memPages.get(id) || []) {
+        const pg = D.pageOf(id, page);
+        const pv = pvMem.get(`${id}|${page}`);
+        // 타일을 지웠거나(다시 만들기·영구 삭제) 쪽·미리보기 크기가 바뀌었으면 그 쪽 것을 놓는다(진행 중 upto 가 오르는 것은 그대로 맞다)
+        if (!pg || !pg.tiles || !pg.preview || (pv && pv.v.sig !== pvSig(pg))) dropMem(id, page);
+      }
+    }
+  });
+}
+const memPages = new Map();            // id → Set(page) — 메모리에 뭔가 둔 쪽(무효화 확인용)
+const notePage = (id, page) => { let s = memPages.get(id); if (!s) memPages.set(id, s = new Set()); s.add(page); };
+const pvSig = pg => `${pg.w}x${pg.h}|${pg.preview?.w}x${pg.preview?.h}`;
+
+// 타일 파일 읽기 — OPFS 폴더 손잡이를 도면마다 기억(타일마다 루트부터 폴더 세 번 열던 것을 한 번으로). 안 되면 저장소 함수 그대로
+const dirMem = new Map();              // id → Promise<FileSystemDirectoryHandle|null>
+let storeKind = null;
+async function readTile(id, page, z, x, y) {
+  watchMem();
+  notePage(id, page);
+  if (!storeKind) storeKind = await D.tileStore().catch(() => 'idb');
+  if (storeKind === 'opfs') {
+    let dp = dirMem.get(id);
+    if (!dp) {
+      dp = navigator.storage.getDirectory().then(r => r.getDirectoryHandle(D.TILE_DIR)).then(t => t.getDirectoryHandle(id)).catch(() => null);
+      dirMem.set(id, dp);
+    }
+    const dir = await dp;
+    if (dir) {
+      try { return await (await dir.getFileHandle(D.tileFile(page, z, x, y))).getFile(); } catch { dirMem.delete(id); /* 폴더가 바뀜 — 아래로 */ }
+    } else dirMem.delete(id);
+  }
+  return D.tileBlob(id, page, z, x, y);
+}
+
+// 미리보기 한 장 — 읽고 디코드까지 끝낸 <img>(그대로 화면에 붙여도 기다림 없이 그려진다)
+export function previewNow(id, page = 1) {
+  const pg = D.pageOf(id, page);
+  if (!pg?.preview) return null;
+  const v = lruGet(pvMem, `${id}|${page}`);
+  return v && v.sig === pvSig(pg) && v.img.complete && v.img.naturalWidth ? v.img : null;
+}
+export function previewImg(id, page = 1) {
+  const now = previewNow(id, page);
+  if (now) return Promise.resolve(now);
+  const pg = D.pageOf(id, page);
+  if (!pg?.preview) return Promise.resolve(null);
+  const k = `${id}|${page}`;
+  let p = pvWait.get(k);
+  if (p) return p;
+  watchMem();
+  const sig = pvSig(pg);
+  p = readTile(id, page, 'pv', 0, 0).then(async b => {
+    if (!b) return null;
+    const im = new Image();
+    im.decoding = 'async';
+    im.alt = '';
+    im.src = URL.createObjectURL(b);
+    try { await im.decode(); } catch { await new Promise(r => { if (im.complete) r(); else { im.onload = im.onerror = () => r(); } }); }
+    if (!im.naturalWidth) { URL.revokeObjectURL(im.src); return null; }
+    if (pvWait.get(k) !== p) { URL.revokeObjectURL(im.src); return null; }   // 그새 무효화됨
+    lruSet(pvMem, k, { img: im, sig }, im.naturalWidth * im.naturalHeight * 4);
+    return im;
+  }).catch(() => null).finally(() => { if (pvWait.get(k) === p) pvWait.delete(k); });
+  pvWait.set(k, p);
+  return p;
+}
+// 미리 받아 풀어 두기(한가할 때 엔진이 부른다 — 주변 칸·한 단계 위)
+async function prefetchTile(id, page, z, x, y) {
+  const k = memKey(id, page, `${z}/${x}/${y}`);
+  if (decMem.has(k)) return lruGet(decMem, k)?.src || null;
+  const u = await tileUrl(id, page, z, x, y);
+  if (!u) return null;
+  const im = new Image();
+  im.decoding = 'async';
+  im.src = u;
+  try { await im.decode(); } catch { return u; }
+  if (!tileExists(id, page, z, x, y) || decMem.has(k)) return u;      // 그새 다시 만들기 시작했거나 화면이 먼저 맡김
+  lruSet(decMem, k, im, im.naturalWidth * im.naturalHeight * 4);
+  return u;
+}
+// 디코드된 칸 <img> 맡기기·꺼내기(엔진이 화면에서 뺀 칸 — 다시 열거나 되돌아올 때 기다림 없이)
+function keepTile(id, page, z, x, y, im) {
+  if (!im?.complete || !im.naturalWidth || !tileExists(id, page, z, x, y)) return false;
+  lruSet(decMem, memKey(id, page, `${z}/${x}/${y}`), im, im.naturalWidth * im.naturalHeight * 4);
+  notePage(id, page);
+  return true;
+}
+function takeTile(id, page, z, x, y) {
+  const k = memKey(id, page, `${z}/${x}/${y}`);
+  const e = decMem.get(k);
+  if (!e) return null;
+  decMem.delete(k); decBytes -= e.bytes;
+  const im = e.v;
+  return im.complete && im.naturalWidth ? im : null;
+}
+// 도면 하나 미리 데우기 — 미리보기(디코드까지)·맨 아래 단계 타일. 줄을 누르는 순간(pointerdown)·목록이 뜬 뒤 한가할 때
+//   맞춤으로 열 때 깔릴 단계(화면 크기·밀도로 고름 — livemap 과 같은 규칙)의 칸과 맨 아래 단계(작은 창)를 먼저 풀어 두고, 미리보기는 그다음
+export function warm(id, page = null) {
+  const d = D.drawing(id);
+  if (!d || d.deletedAt || d.missingFile) return Promise.resolve(false);
+  const pg = page ? D.pageOf(id, page) : (D.pageOf(id, d.geo?.page || 0) || d.pages?.[0]);
+  if (!pg?.preview && !pg?.tiles) return Promise.resolve(false);
+  const jobs = [prefetchTile(id, pg.page, 0, 0, 0)];
+  const fz = fitLevel(pg);
+  const l = fz > 0 ? pg.tiles?.levels?.[fz] : null;
+  if (l && l.cols * l.rows <= 12) for (let y = 0; y < l.rows; y++) for (let x = 0; x < l.cols; x++) jobs.push(prefetchTile(id, pg.page, fz, x, y));
+  return Promise.all(jobs).catch(() => null).then(() => (pg.preview ? previewImg(id, pg.page) : null)).then(im => !!im, () => false);
+}
+// 화면에 맞춰 열 때 엔진이 고를 단계(livemap imageGeo.level 과 같은 식 — 도면 보기 화면은 폭 꽉·높이 약 70%)
+function fitLevel(pg) {
+  const L = pg?.tiles?.levels;
+  if (!L?.length || !pg.w || !pg.h || typeof innerWidth !== 'number') return 0;
+  const top = L.length - 1, dpr = globalThis.devicePixelRatio || 1;
+  const fz = top + Math.log2(Math.min((innerWidth * 0.94) / pg.w, (innerHeight * 0.7 * 0.94) / pg.h));
+  const bias = Math.min(1.4, Math.max(0.25, Math.log2(dpr)));
+  return Math.max(0, Math.min(Math.min(top, pg.tiles.upto ?? top), Math.round(fz + bias)));
+}
+// 고정·최근 도면 몇 개를 한가할 때 데운다(미리보기 바이트 상한 안에서) — 도면보관함·도면 보기 화면이 뜰 때(resumePending)
+let warmT = 0;
+export function warmRecent(n = null) {
+  if (warmT || typeof document === 'undefined') return;
+  const idle = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 2500 }) : setTimeout(fn, 600));
+  warmT = idle(async () => {
+    warmT = 0;
+    const cap = n ?? Math.max(1, Math.floor(pvBudget() / 16e6) - 1);
+    // 고정한 것 → 최근 연(없으면 올린) 순 — 다음에 열 가능성이 큰 것부터
+    const when = d => d.lastOpenedAt || d.addedAt || 0;
+    const list = D.drawings().filter(d => !d.missingFile && d.pages?.some(p => p.preview || p.tiles))
+      .sort((a, b) => ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) || (when(b) - when(a))).slice(0, cap);
+    for (const d of list) {
+      if (!N.isQuiet(800)) await N.whenQuiet({ quietMs: 800, maxMs: 8000 });
+      await warm(d.id).catch(() => {});
+    }
+  });
+}
+export function memStats() { return { urls: urlMem.size, previews: pvMem.size, previewMB: Math.round(pvBytes / 1e5) / 10, decoded: decMem.size, decodedMB: Math.round(decBytes / 1e5) / 10, budgetMB: pvBudget() / 1e6, decBudgetMB: decBudget() / 1e6 }; }
 
 // ---- 워커 ----
 let seq = 0;
@@ -121,6 +351,7 @@ async function build(id, page, blob, { tileSize = 512, format = 'auto', q = 0.85
   const t0 = performance.now();
   const hasMeta = () => !!D.drawing(id);
   localMeta.delete(`${id}:${page}`);
+  dropMem(id, page);                                                  // 메모리에 남긴 예전 그림도
   await D.clearTiles(id, page).catch(() => {});                       // 예전 것(단계 수가 다를 수 있다)
 
   const w = new Worker(WORKER_URL);
@@ -279,13 +510,36 @@ export async function openHidden(blob, name, { timeout = FRAME_MS, signal } = {}
       if (signal?.aborted) throw abortErr();
       const s = snapKind(iframe);
       if (s.kind && s.name === name) break;
-      if ((s.reason === 'error' || s.reason === 'format') && s.name === name) throw Object.assign(new Error(s.reason === 'format' ? '이 파일은 도면으로 그릴 수 없어요' : '도면을 열지 못했어요'), { code: s.reason === 'format' ? 'FORMAT' : 'OPEN' });
+      if (s.reason === 'format' && s.name === name) throw Object.assign(new Error('이 파일은 도면으로 그릴 수 없어요'), { code: 'FORMAT' });
+      if (s.reason === 'error' && s.name === name) {
+        // 뷰어가 엔진(LibreDWG·PDF.js — CDN, 처음 한 번 인터넷)을 못 받았으면 ENGINE(파일 탓이 아님 — 인터넷이 있으면 resumePending 이 다시), 아니면 OPEN
+        let why = '';
+        try { const er = iframe.contentWindow.AV.active()?.error; why = String(er?.message || er || ''); } catch { /* 무시 */ }
+        throw Object.assign(new Error(why || '도면을 열지 못했어요'), { code: /인터넷|CDN/.test(why) ? 'ENGINE' : 'OPEN' });
+      }
       if (Date.now() - t0 > timeout) throw Object.assign(new Error('도면을 여는 데 너무 오래 걸려요(처음엔 인터넷 필요)'), { code: 'TIMEOUT' });
       await sleep(250);
     }
     await sleep(300);                                                  // 첫 그리기 자리 잡기
     return { iframe, close };
   } catch (e) { close(); throw e; }
+}
+
+// 숨긴 뷰어 이어 쓰기(같은 도면의 여러 쪽) — 줄에 그 도면이 더 없으면 닫는다. 남겨 둬도 30초 뒤엔 닫는다(메모리)
+let hidden = null;                     // { id, fr, t }
+async function hiddenFor(id, blob, name) {
+  if (hidden && hidden.id === id) { clearTimeout(hidden.t); return hidden.fr; }
+  closeHidden();
+  const fr = await openHidden(blob, name);
+  hidden = { id, fr, t: 0 };
+  return fr;
+}
+function closeHidden() { if (!hidden) return; clearTimeout(hidden.t); try { hidden.fr.close(); } catch { /* 이미 닫힘 */ } hidden = null; }
+function releaseHidden(id) {
+  if (!hidden || hidden.id !== id) return;
+  const more = [...queued].filter(k => k.startsWith(`${id}:`)).length > 1;   // 지금 것(아직 줄에 있음) 말고 더
+  if (!more) { closeHidden(); return; }
+  hidden.t = setTimeout(closeHidden, 30000);
 }
 
 // ---- 도면 처리 줄(올린 뒤 뒤에서, 한 번에 하나) ----
@@ -300,7 +554,7 @@ function setState(id, s) {
 export const buildState = id => states.get(id) || null;
 export function onBuild(fn) { buildSubs.add(fn); return () => buildSubs.delete(fn); }
 
-const ERR_TEXT = { NOFILE: '원본 파일이 없어요', FORMAT: '이 파일은 도면으로 그릴 수 없어요', TIMEOUT: '여는 데 너무 오래 걸려요(처음엔 인터넷 필요)', NO_WORKER: '이 기기에서는 그림을 못 만들어요', MEMORY: '메모리가 모자라요', QUOTA: '저장 공간이 부족해요' };
+const ERR_TEXT = { NOFILE: '원본 파일이 없어요', FORMAT: '이 파일은 도면으로 그릴 수 없어요', TIMEOUT: '여는 데 너무 오래 걸려요(처음엔 인터넷 필요)', NO_WORKER: '이 기기에서는 그림을 못 만들어요', MEMORY: '메모리가 모자라요', QUOTA: '저장 공간이 부족해요', ENGINE: '처음 한 번 인터넷이 필요해요. 연결되면 다시 만들어요' };
 export function queueDrawing(id, { page = 1, force = false } = {}) {
   const k = `${id}:${page}`;
   if (queued.has(k)) return jobs;
@@ -308,18 +562,72 @@ export function queueDrawing(id, { page = 1, force = false } = {}) {
   if (!states.get(id) || states.get(id).phase === 'error') setState(id, { phase: 'wait', pct: 0, page });
   const p = jobs.then(() => processOne(id, page, force)).then(() => setState(id, null), e => {
     console.warn('도면 그림을 못 만들었어요', id, e);
-    setState(id, { phase: 'error', pct: 0, page, code: e?.code || 'ERROR', message: ERR_TEXT[e?.code] || '그림을 못 만들었어요' });
+    setState(id, { phase: 'error', pct: 0, page, code: e?.code || 'ERROR', message: ERR_TEXT[e?.code] || '그림을 못 만들었어요', at: Date.now() });
   }).finally(() => queued.delete(k));
   jobs = p.catch(() => {});
   return p;
 }
+const ENGINE_RETRY_MS = 15000;         // 엔진을 못 받은 도면을 화면에 들어올 때 다시 세우는 간격(오가며 헛걸음 — 숨긴 뷰어 띄우기 — 을 줄인다)
 export async function resumePending() {
   await D.ready();
+  const online = globalThis.navigator?.onLine !== false;
   for (const d of D.drawings()) {
-    if (d.missingFile || states.get(d.id)?.phase === 'error') continue;
+    const s = states.get(d.id);
+    // 오류 난 도면은 다시 세우지 않는다(같은 파일이면 또 실패) — 엔진을 못 받은 것(ENGINE)만, 인터넷이 있고 조금 지났으면 다시
+    const retry = s?.code === 'ENGINE' && online && Date.now() - (s.at || 0) > ENGINE_RETRY_MS;
+    if (d.missingFile || (s?.phase === 'error' && !retry)) continue;
     if (!d.pages.length) queueDrawing(d.id, { page: 1 });
     else for (const pg of d.pages) if (!pg.tiles?.ready || !pg.preview) queueDrawing(d.id, { page: pg.page });
   }
+  warmRecent();                                                       // 최근 연 도면은 한가할 때 미리보기까지 풀어 둔다(누르면 바로)
+}
+// 인터넷이 돌아오면 엔진을 못 받은 도면을 바로 다시(브라우저·PWA. 앱 웹뷰는 이 알림이 안 올 수 있어 — 화면에 다시 들어올 때 resumePending 이 한다)
+if (typeof addEventListener === 'function') addEventListener('online', () => { for (const [id, s] of [...states]) if (s.code === 'ENGINE') queueDrawing(id, { page: s.page || 1 }); });
+
+// ---- [모두 미리 변환] — 아직 그림이 없는 쪽(여러 쪽 PDF 의 2쪽부터 등)까지 지금 다 만든다(지하·오프라인에서 처음 여는 쪽도 바로 뜨게) ----
+// 네트워크: PDF·DWG·DXF 는 뷰어 엔진을 처음 한 번 인터넷에서 받는다 → 화면은 셀룰러면 묻고, 아니면 「와이파이 권장」 한 줄.
+// netInfo() → { type, cellular, saveData, known }  (Network Information API — 안드로이드 크롬·웹뷰. 없으면 known:false)
+export function netInfo() {
+  const c = globalThis.navigator?.connection;
+  if (!c) return { type: null, cellular: false, saveData: false, known: false };
+  const type = c.type || null;
+  const cellular = type === 'cellular' || (!type && /(^|-)(2g|3g)$/.test(c.effectiveType || ''));
+  return { type, cellular, saveData: !!c.saveData, known: !!(type || c.effectiveType) };
+}
+// 만들 것 → { pages:[{id,page}], drawings, engines } — engines: 뷰어로 떠야 하는 형식(PDF·CAD)이 끼어 있음(처음엔 인터넷)
+export function prebuildPlan() {
+  const pages = [];
+  const ids = new Set();
+  let engines = false;
+  for (const d of D.drawings()) {
+    if (d.missingFile || d.deletedAt) continue;
+    const n = Math.max(1, d.pageCount || 0, d.pages.length);
+    for (let p = 1; p <= n; p++) {
+      const pg = D.pageOf(d.id, p);
+      if (pg?.tiles?.ready && pg.preview) continue;
+      pages.push({ id: d.id, page: p });
+      ids.add(d.id);
+      if (d.kind !== 'image' || !DIRECT.has(d.ext)) engines = true;
+    }
+  }
+  return { pages, drawings: ids.size, engines };
+}
+// 모두 줄 세우기 → Promise<{ total, done, failed }>. onProgress(done, total) — 한 쪽 끝날 때마다
+export async function prebuildAll({ onProgress } = {}) {
+  await D.ready();
+  const plan = prebuildPlan();
+  const total = plan.pages.length;
+  let done = 0, failed = 0;
+  const tick = () => { try { onProgress?.(done, total); } catch { /* 무시 */ } };
+  tick();
+  // 실패한 도면(오류 표시)도 다시 — 사용자가 직접 누른 것이므로
+  for (const { id } of plan.pages) if (states.get(id)?.phase === 'error') states.delete(id);
+  await Promise.all(plan.pages.map(({ id, page }) => queueDrawing(id, { page }).then(() => {
+    const pg = D.pageOf(id, page);
+    if (pg?.tiles?.ready) done++; else failed++;
+    tick();
+  })));
+  return { total, done, failed };
 }
 
 async function processOne(id, page, force) {
@@ -346,16 +654,17 @@ async function processOne(id, page, force) {
     }
   }
   setState(id, { phase: 'render', pct: 0, page });
-  const fr = await openHidden(blob, d.name);
+  // 숨긴 뷰어는 같은 도면의 다음 쪽이 줄에 있으면 닫지 않고 이어 쓴다(쪽마다 뷰어를 다시 띄우고 PDF 를 다시 읽지 않게)
+  const fr = await hiddenFor(id, blob, d.name);
   let r;
   try {
     await N.whenQuiet({ quietMs: 800, maxMs: 10000 });
     r = await renderPageLarge(fr.iframe, { page: d.kind === 'pdf' ? page : null, maxSide, maxPx: lim.maxPx, detail: true });
-  } finally { fr.close(); }
+  } catch (e) { closeHidden(); throw e; } finally { releaseHidden(id); }
   if (r.pages > 1 && D.drawing(id)?.pageCount !== r.pages) await D.updateDrawing(id, { pageCount: r.pages }).catch(() => {});
   setState(id, { phase: 'tiles', pct: 0, page });
   await buildTiles(id, page, r.blob, { maxSide, maxPx: lim.maxPx, onProgress });
 }
 
 // 시험용
-export function _reset() { workerOk = null; states.clear(); queued.clear(); }
+export function _reset() { workerOk = null; states.clear(); queued.clear(); for (const id of [...memPages.keys()]) dropMem(id); dirMem.clear(); storeKind = null; }

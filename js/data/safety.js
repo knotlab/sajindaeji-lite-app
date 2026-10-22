@@ -11,6 +11,9 @@
 //   (localStorage 직전 칸·K_DWKEEP, 파일 -줄어듦·도면이 가장 많은 세대, 미러 drawings-prev.json). 덤프를 못 뜨면(null) 직전 것을 옮겨 싣는다
 // 쓰는 쪽(미러·백업·localStorage)의 겹은 그대로, 읽는 쪽만 줄였다: 부팅 때 미러는 파일 이름만(r-<id>.json → id), 백업은 index.json 만,
 //   잃은 것이 보일 때만 그 본문을 읽는다(원본 store.js listShards·findOffer).
+// 폴더(v0.1.5, data/folders.js — 자료함·도면보관함 폴더와 배치): 백업 JSON 의 folders 칸, 미러 mirror/folders.json, localStorage K_FDKEEP 한 칸.
+//   폴더 DB 가 비었는데(못 열었거나 잃음 — 지운 폴더는 묘비가 30일 남아 일부러 비는 일은 드물다) 직전 덤프가 있으면 그것을 옮겨 싣고,
+//   처음 열 때 폴더 DB 가 통째로 비어 있으면 보관 칸·미러에서 조용히 합친다(mergeFolders — 이 기기 것이 늘 이기고 묘비는 되살리지 않는다).
 // 미러·하루 백업 쓰기는 한가할 때(native.whenQuiet — 최근 2초 안에 셔터·글 입력이 없고 글 칸이 비활성, 2026-10-22 폰 "찍은 직후 글이 늦게 쳐짐").
 //   백그라운드로 갈 때(onPause)는 미러만 바로 쓰고, 파일 백업은 바뀐 게 있고 마지막 파일 백업 뒤 10분이 지났거나 날이 바뀌었을 때만(속도 감사 #2).
 import * as N from '../platform/native.js';
@@ -28,6 +31,7 @@ const K_BAK = 'sajindaeji-lite.autobackup.v1';
 const K_BAK2 = 'sajindaeji-lite.autobackup.prev.v1';
 const K_HEAD = 'sajindaeji-lite.autobackup.head.v1';                       // { cur: Head, prev: Head } — Head = { at, day, live, n, ids, dw, pins, pdw, ppins }
 const K_DWKEEP = 'sajindaeji-lite.autobackup.drawings.v1';                  // 도면보관함 덤프만(작다) — 잃은 것 없이 바뀔 때만 새로(도면 DB 만 잃었을 때 되살릴 곳)
+const K_FDKEEP = 'sajindaeji-lite.autobackup.folders.v1';                   // 폴더 덤프만(작다) — 비지 않았을 때만 새로(폴더 DB 만 잃었을 때 되살릴 곳)
 const MIRROR_DELAY = 1000;
 const KEEP = 14;
 const DAY = 864e5;
@@ -41,7 +45,7 @@ const FOLDERS = [
 ];
 const fkey = f => `${f.dir}:${f.folder}`;
 
-let started = false, dirty = true, mirrorTimer = null, mirrorMeta = false, mirrorDw = false;
+let started = false, dirty = true, mirrorTimer = null, mirrorMeta = false, mirrorDw = false, mirrorFd = false;
 const mirrorIds = new Set();
 let mirrorChain = Promise.resolve(), backupChain = Promise.resolve();
 const offs = [];
@@ -77,6 +81,56 @@ async function dumpForBackup() {
   return null;
 }
 
+// 폴더(별도 DB) — 부팅에서 열지 않는다(모듈만 불러 구독). 백업·복구 때만 연다
+let fdMod = null;
+async function foldersMod({ open = true } = {}) {
+  try {
+    if (!fdMod) fdMod = await import('./folders.js');
+    if (open) await fdMod.ready();
+    return fdMod;
+  } catch (e) { console.warn('폴더를 열지 못했어요(백업에서 뺌)', e); return null; }
+}
+const cleanFd = d => (d && typeof d === 'object' && Number.isFinite(d.v) && Array.isArray(d.folders) && Array.isArray(d.places) ? d : null);
+const hasFd = d => !!d && (d.folders.length > 0 || d.places.length > 0);
+// backup.json 글·객체 → parseBackupJson 결과 + folders(core/backup.js 가 모르는 칸)
+function parseFull(input) {
+  let o = input;
+  if (typeof input === 'string') { try { o = JSON.parse(input); } catch { o = input; } }
+  return { ...parseBackupJson(o), folders: cleanFd(o?.folders) };
+}
+let lastFd = null;                                                           // 이 실행에서 마지막으로 뜬 비지 않은 폴더 덤프
+// 폴더 DB 는 여기서 새로 열지 않는다 — 떠날 때(pagehide) 백업이 IndexedDB 열기를 기다리다 페이지가 닫혀
+//   localStorage 백업이 통째로 빠졌다(v0.1.5 검증, e2e §9-9). 이 실행에서 아직 안 열었으면 바뀐 것도 없다 → 직전 덤프를 옮겨 싣는다
+async function foldersForBackup() {
+  const F = await foldersMod({ open: false });
+  let d = null;
+  try { d = F && (typeof F.isOpen !== 'function' || F.isOpen()) ? cleanFd(F.dumpFolders()) : null; } catch { d = null; }
+  if (hasFd(d)) { lastFd = d; return d; }
+  if (lastFd) return lastFd;                                                 // 이 실행에서 연 것이 가장 새롭다
+  const carry = await newestKeptFd();
+  return hasFd(carry) ? carry : null;
+}
+// 보관 칸(K_FDKEEP)·미러(folders.json) 중 at 이 가장 새로운 덤프 — 순서를 고정하면 하루 한 번만 쓰던 옛 보관 칸이
+//   최신 미러를 이겨 오늘 파일 백업을 옛 폴더 상태로 덮었다(검토 때 재현, v0.1.5). 보관 칸은 이제 폴더가 바뀔 때마다 새로 쓴다
+async function newestKeptFd() {
+  const k = readLs(K_FDKEEP);
+  const cands = [{ at: Number(k?.at) || 0, dump: cleanFd(k?.dump) }];
+  if (native()) { const m = await readMirrorFolders({ withAt: true }).catch(() => null); if (m) cands.push(m); }
+  let best = null;
+  for (const c of cands) if (hasFd(c.dump) && (!best || c.at > best.at)) best = c;
+  return best?.dump || null;
+}
+// 처음 열 때 폴더 DB 가 통째로 비어 있으면(묘비·배치 하나 없음) 보관 칸·미러 중 가장 새로운 것을 합친다
+async function healFolders(F) {
+  try {
+    if (hasFd(cleanFd(F.dumpFolders()))) return;
+    const keep = await newestKeptFd();
+    if (!hasFd(keep)) return;
+    const r = await F.mergeFolders(keep);
+    if (r?.added) console.info('폴더를 되살렸어요', r);
+  } catch (e) { console.warn('폴더 되살리기 실패', e); }
+}
+
 // ---- 시작 ----
 export async function startSafety() {
   if (started) return;
@@ -93,6 +147,16 @@ export async function startSafety() {
   drawingsMod({ open: false }).then(dw => {
     if (!started || typeof dw?.onDrawings !== 'function') return;
     offs.push(dw.onDrawings(ev => { if (ev?.init) return; dirty = true; if (native()) { mirrorDw = true; scheduleMirror(); } }));   // 처음 열기(init)는 바뀐 게 아니다
+  });
+  // 폴더가 바뀌면 같게(미러 folders.json). 처음 열기는 바뀐 게 아니고, 그때 통째로 비었으면 되살린다
+  foldersMod({ open: false }).then(F => {
+    if (!started || typeof F?.onFolders !== 'function') return;
+    offs.push(F.onFolders(ev => {
+      if (ev?.init) { healFolders(F); return; }
+      dirty = true; if (native()) { mirrorFd = true; scheduleMirror(); }
+      // 보관 칸은 바뀔 때마다 바로(덤프가 작다) — APK 의 localStorage 백업은 하루 한 번이라 그것만 믿으면 낡는다
+      try { const d = cleanFd(F.dumpFolders()); if (hasFd(d)) { lastFd = d; const L = ls(); if (L) keepFoldersLocal(L, d, Date.now()); } } catch (e) { console.warn('폴더 보관 칸 쓰기 실패', e); }
+    }));
   });
   offs.push(N.onPause?.(() => {
     flushMirror();
@@ -118,7 +182,7 @@ export function stopSafety() {
   offs.splice(0).forEach(f => { try { f(); } catch { /* 없음 */ } });
   clearTimeout(mirrorTimer); mirrorTimer = null;
   started = false;
-  mirrorNames = null; idxCache.clear(); mirrorDwStat = undefined; lastDump = null;
+  mirrorNames = null; idxCache.clear(); mirrorDwStat = undefined; lastDump = null; lastFd = null;
 }
 
 async function daily() {
@@ -139,14 +203,16 @@ function scheduleMirror() {
 }
 function flushMirror() {
   clearTimeout(mirrorTimer); mirrorTimer = null; mirrorWaiting = false;
-  if (!native()) { mirrorIds.clear(); mirrorMeta = false; mirrorDw = false; return mirrorChain; }
+  if (!native()) { mirrorIds.clear(); mirrorMeta = false; mirrorDw = false; mirrorFd = false; return mirrorChain; }
   const ids = [...mirrorIds]; mirrorIds.clear();
   const withMeta = mirrorMeta; mirrorMeta = false;
   const withDw = mirrorDw; mirrorDw = false;
+  const withFd = mirrorFd; mirrorFd = false;
   mirrorChain = mirrorChain.then(async () => {
     for (const id of ids) await writeShard(id).catch(e => console.warn('미러 쓰기 실패', id, e));   // 쓸 때 그 시점의 최신 캐시를 읽는다
     if (withMeta) await writeMirrorMeta().catch(e => console.warn('미러 meta 쓰기 실패', e));
     if (withDw) await writeMirrorDrawings().catch(e => console.warn('미러 도면 쓰기 실패', e));
+    if (withFd) await writeMirrorFolders().catch(e => console.warn('미러 폴더 쓰기 실패', e));
   });
   return mirrorChain;
 }
@@ -187,6 +253,24 @@ async function writeMirrorDrawings() {
   mirrorDwStat = stat;
   names.add('drawings.json');
 }
+// folders.json = 지금 폴더·배치. 비었으면(못 열었거나 잃음) 멀쩡한 미러를 덮지 않는다
+async function writeMirrorFolders() {
+  const F = await foldersMod();
+  const d = F ? cleanFd(F.dumpFolders()) : null;
+  if (!hasFd(d)) return;
+  await N.atomicWrite(DATA, 'mirror/folders.json', JSON.stringify({ v: 1, at: Date.now(), dump: d }));
+  mirrorNames?.add('folders.json');
+}
+// withAt: { at, dump } 로(가장 새로운 것 고르기용)
+async function readMirrorFolders({ withAt = false } = {}) {
+  const names = await listMirror();
+  if (!names.has('folders.json')) return null;
+  try {
+    const o = JSON.parse(await N.fsRead(DATA, 'mirror/folders.json', { utf8: true }));
+    const dump = cleanFd(o?.dump);
+    return withAt ? (dump ? { at: Number(o?.at) || 0, dump } : null) : dump;
+  } catch { return null; }
+}
 async function listMirror() {
   if (!mirrorNames) mirrorNames = new Set((await N.fsList(DATA, 'mirror')).map(f => f.name));
   return mirrorNames;
@@ -215,7 +299,8 @@ async function readMirror(ids) {
   let meta = {};
   try { meta = JSON.parse(await N.fsRead(DATA, 'mirror/meta.json', { utf8: true }))?.meta || {}; } catch { /* 없음 */ }
   const drawings = (await readMirrorDrawings())?.dump || null;
-  return { source: 'mirror', records, photos, settings: meta.settings || null, lastLocation: meta.lastLocation || null, drawings, at };
+  const folders = await readMirrorFolders().catch(() => null);
+  return { source: 'mirror', records, photos, settings: meta.settings || null, lastLocation: meta.lastLocation || null, drawings, folders, at };
 }
 // drawings.json·drawings-prev.json 중 도면이 더 많은 쪽(같으면 핀 → 지금 것)
 async function readMirrorDrawings() {
@@ -231,6 +316,8 @@ async function snapshotJson(now, today) {
   const s = store.snapshot();                                                // 첫 await 전에(같은 틱) — backupNow 의 dirty 내리기와 짝
   const drawings = await dumpForBackup();
   const b = makeBackupJson({ records: s.records, photos: s.photos, settings: s.settings, lastLocation: s.lastLocation, now, appVersion: APP_VERSION, installId: s.installId, drawings });
+  const folders = await foldersForBackup();
+  if (folders && !b.folders) { b.folders = folders; b.counts.folders = folders.folders.filter(f => !f.deletedAt).length; }
   b.day = today;                                                             // localStorage 돌리기용 — 파일과 같은 글을 한 번만 만든다
   return b;
 }
@@ -264,6 +351,7 @@ function writeLocal(b, text, today) {
   const heads = localHeads();
   const r = rotateLocal({ cur: asRot(heads.cur), prev: asRot(heads.prev), next: { counts: { live: liveOf(b), ...dwStatOf(b.drawings) } }, today });
   keepDrawingsLocal(L, b.drawings, b.at);
+  keepFoldersLocal(L, b.folders, b.at);
   const put = (t, head, mustPush) => {
     let prevHead = heads.prev;
     if (r.pushed) { try { L.setItem(K_BAK2, L.getItem(K_BAK)); prevHead = heads.cur; } catch (e) { if (mustPush) throw e; } }
@@ -288,6 +376,16 @@ function keepDrawingsLocal(L, d, at) {
     if (!oldDump && !dump.drawings.length && !dump.pins.length) return;     // 도면을 안 쓰면 칸을 만들지 않는다
     if (L.getItem(K_DWKEEP) !== text) L.setItem(K_DWKEEP, text);
   } catch (e) { console.warn('도면 보관 칸 쓰기 실패', e?.name); }
+}
+
+// 폴더 덤프 따로 한 칸(작다) — 비지 않았을 때만 새로
+function keepFoldersLocal(L, d, at) {
+  const dump = cleanFd(d);
+  if (!hasFd(dump)) return;
+  try {
+    const text = JSON.stringify({ v: 1, at, dump });
+    if (L.getItem(K_FDKEEP) !== text) L.setItem(K_FDKEEP, text);
+  } catch (e) { console.warn('폴더 보관 칸 쓰기 실패', e?.name); }
 }
 
 // ---- 백업 폴더 목록(index.json) ----
@@ -414,7 +512,7 @@ export async function checkRestore({ now = Date.now() } = {}) {
   for (const [slot, key] of [['cur', K_BAK], ['prev', K_BAK2]]) {
     const hd = heads[slot];
     if (!hd) continue;
-    add({ source: 'local', at: hd.at, load: async () => ({ source: 'local', ...parseBackupJson(readLs(key)) }) }, lostOf(Array.isArray(hd.ids) ? hd.ids : []), hd.dw || 0);
+    add({ source: 'local', at: hd.at, load: async () => ({ source: 'local', ...parseFull(readLs(key)) }) }, lostOf(Array.isArray(hd.ids) ? hd.ids : []), hd.dw || 0);
   }
   if (dwEmpty && keptN > 0) add({ source: 'local', at: Number(kept.at) || 0, load: async () => ({ source: 'local', records: [], photos: [], drawings: cleanDrawingsDump(kept.dump), at: Number(kept.at) || 0 }) }, [], keptN);
   if (native()) {
@@ -436,14 +534,14 @@ export async function checkRestore({ now = Date.now() } = {}) {
         //   (묶음이 그보다 줄면 — 일부 손실·영구 삭제 — 다시 연다. DB 를 통째로 잃으면 이 표지도 같이 사라진다)
         const vk = `${best.name}|${best.at}|${best.n}`, v = ver[fkey(f)];
         if (best.n > have && !(v?.k === vk && have >= v.have)) {
-          const parsed = parseBackupJson(await readText(f, best.name));
+          const parsed = parseFull(await readText(f, best.name));
           const lost = lostOf(parsed.records.map(r => r.id));
           add({ source: 'file', at: parsed.at, load: async () => ({ source: 'file', ...parsed }) }, lost, parsed.drawings?.drawings?.length || 0);
           if (!lost.length) verNow[fkey(f)] = { k: vk, have };
         }
         const bd = dwEmpty ? bestDwRow(rs) : null;                           // 도면 DB 만 잃음 — 도면이 가장 많은 세대
         if (bd && !(best.n > have && bd.name === best.name)) {
-          add({ source: 'file', at: bd.at, load: async () => ({ source: 'file', ...parseBackupJson(await readText(f, bd.name)) }) }, [], bd.dw);
+          add({ source: 'file', at: bd.at, load: async () => ({ source: 'file', ...parseFull(await readText(f, bd.name)) }) }, [], bd.dw);
         }
       } catch { /* 폴더 없음·권한·깨짐 */ }
     }
@@ -474,7 +572,7 @@ async function drawingsEmpty() {
 // [나중에] — 같은 상황이면 7일 동안 다시 묻지 않는다
 export const snoozeRestore = (cand, now = Date.now()) => store.setMeta('restoreSnooze', { sig: cand?.sig || '', until: now + 7 * DAY });
 
-// → { added, updated, photos, missing, drawings? }
+// → { added, updated, photos, missing, drawings?, folders? }
 //   잃은 묶음이 없는 후보(도면만 비었음)는 도면만 합친다 — 묶음까지 합치면 영구 삭제한 묶음이 되살아난다(v0.1.4 검토).
 //   묶음을 합칠 때도 영구 삭제 기록(purgedIds)에 있는 묶음·그 사진은 거른다
 export async function restoreFrom(cand) {
@@ -493,7 +591,12 @@ export async function restoreFrom(cand) {
     const dw = await drawingsMod();
     if (dw?.mergeDrawings) drawings = await dw.mergeDrawings(cand.drawings).catch(e => { console.warn('도면보관함 되살리기 실패', e); return null; });
   }
-  return { added: r.added, updated: r.updated, photos: r.photos, missing: r.missing, drawings };
+  let folders = null;
+  if (cleanFd(cand.folders)) {
+    const F = await foldersMod();
+    if (F?.mergeFolders) folders = await F.mergeFolders(cand.folders).catch(e => { console.warn('폴더 되살리기 실패', e); return null; });
+  }
+  return { added: r.added, updated: r.updated, photos: r.photos, missing: r.missing, drawings, folders };
 }
 
 // 브라우저가 저장소를 비우지 않게 보호됐는지(설정 정보 표시용). 모르면 null

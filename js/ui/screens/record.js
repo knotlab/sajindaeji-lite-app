@@ -180,7 +180,7 @@ export default {
       const multi = field === 'content';
       const v = await dom.textSheet({
         title: multi ? '내용' : '위치', value: r[field] || '', multiline: multi,
-        placeholder: multi ? '무엇을 찍었는지 적어요' : '예: 101동 5층 복도', draftKey: multi ? `rec-content-${id}` : null
+        placeholder: multi ? '무엇을 찍었는지 적어요' : '어디서 찍었는지 적어요', draftKey: multi ? `rec-content-${id}` : null
       });
       if (v == null || dead) return;
       const next = multi ? v.replace(/\s+$/, '') : v.trim();
@@ -254,7 +254,7 @@ export default {
       const nameBtn = h('button', { type: 'button', class: 'rec-pin-name', 'data-testid': 'rec-pin-name', 'aria-label': `핀 이름 ${p.name} 고치기` },
         icon('pin', 20), h('span', { class: 'rec-pin-t' }, nameB, h('small', { text: where })), icon('edit', 20));
       nameBtn.addEventListener('click', async () => {
-        const v = await dom.textSheet({ title: '핀 이름', value: p.name || '', placeholder: '예: 101동 3층 욕실' });
+        const v = await dom.textSheet({ title: '핀 이름', value: p.name || '', placeholder: '이름을 적어요' });
         if (v == null || dead || v.trim() === (p.name || '')) return;
         if (v.trim()) nameB.textContent = v.trim();                           // 화면에 먼저(비우면 「핀 n」은 저장 뒤 알림으로)
         try { await M.updatePin(p.id, { name: v }); }

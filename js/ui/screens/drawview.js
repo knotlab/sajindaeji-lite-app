@@ -19,6 +19,7 @@ import * as gps from '../../services/gps.js';
 import * as heading from '../../services/heading.js';
 import { keepAwake } from '../../platform/awake.js';
 import { drawingMenu, baseName } from './drawings.js';
+import { dayKey } from '../../core/date.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const HINT_KEY = 'lite.dwv.geoHint';
@@ -37,6 +38,9 @@ const headIcon = () => pathIcon(['M12 3l5 16-5-3-5 3z']);
 const listIcon = () => pathIcon(['M9 6h11', 'M9 12h11', 'M9 18h11', 'M4.5 6h.01', 'M4.5 12h.01', 'M4.5 18h.01']);
 const geoIcon = () => pathIcon(['M3 7l6-3 6 3 6-3v13l-6 3-6-3-6 3z', 'M9 4v13', 'M15 7v13']);
 const arrowIcon = () => pathIcon(['M12 3l7 17-7-4-7 4z'], 28, { class: 'ic dwv-arrow' });
+
+// 첫 그림이 나간 뒤 한가할 때(없으면 0.4초 뒤)
+const later = fn => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 800 }) : setTimeout(fn, 400));
 
 export default {
   mount(root, params, nav) {
@@ -81,6 +85,13 @@ export default {
     const pinsBtn = btn('dwv-pins', listIcon(), '핀 0', () => pinsSheet());
     const addBtn = h('button', { type: 'button', class: 'primary dwv-add', 'data-testid': 'dwv-pin-add', onclick: () => startPlace({ kind: 'new' }) }, icon('pin', 22), '핀 찍기');
     const dock = h('div', { class: ['dwv-dock', 'dock'] }, followBtn, headBtn, geoBtn, addBtn, pinsBtn);
+    // [이 도면으로 찍기] — 도면 위 오른쪽 아래(엄지 자리, 보조). 촬영 화면에서 이 도면이 바로 뜬다(같은 자리면 도면 층 → [카메라] 1탭).
+    //   촬영 화면에서 크게 보러 온 것이면 그냥 돌아간다(촬영 화면이 둘 쌓이지 않게)
+    const camBtn = h('button', { type: 'button', class: 'dwv-cam', 'data-testid': 'dwv-capture', onclick: () => {
+      if (params?.from === 'capture') { nav.back(); return; }
+      nav.go('capture', { day: dayKey(Date.now()), drawingId: id, page: view?.page() || params?.page || 1 });
+    } }, icon('camera', 22), h('span', { text: '이 도면으로 찍기' }));
+    stage.append(camBtn);
 
     root.append(bar, guideBand, info, stage, dock);
 
@@ -110,6 +121,7 @@ export default {
       headBtn.setAttribute('aria-label', headingUp ? '보는 방향이 위. 눌러서 도면 그대로' : '보는 방향을 위로');
       headBtn.classList.toggle('on', headingUp); headBtn.setAttribute('aria-pressed', String(headingUp));
       dock.hidden = !!placing;
+      camBtn.hidden = !!placing;
     }
     // 정보 줄: 위치 상태(한 줄, 무엇을 하면 되는지)
     let infoKind = '';
@@ -356,7 +368,7 @@ export default {
         onPlace, onCancel: () => endPlace(),
         onTapPin: pid => { if (!placing) pinSheet(pid); },
       });
-      stage.replaceChildren(view.el);
+      stage.replaceChildren(view.el, camBtn);
       offs.push(view.onMe(() => { drawInfo(); drawGuide(); }));
       offs.push(view.onFollow(m => {
         if (selfFollow) return;
@@ -369,9 +381,13 @@ export default {
     D.ready().then(() => {
       if (!alive) return;
       build();
-      D.markOpened(id).catch(() => {});
       drawBar(); drawDock(); drawInfo();
-      DT.resumePending().catch(() => {});
+      // 첫 그림 뒤로 미룬다(도면 빨리 띄우기): 「최근 연 것」 기록(DB 쓰기 → 알림 → 다시 그리기)·남은 그림 이어 만들기·최근 도면 데우기
+      later(() => {
+        if (!alive) return;
+        D.markOpened(id).catch(() => {});
+        DT.resumePending().catch(() => {});
+      });
     }, e => { console.error('도면보관함을 열지 못했어요', e); setText(infoT, '도면보관함을 열지 못했어요'); });
     offs.push(D.onDrawings(ev => {
       if (!alive) return;

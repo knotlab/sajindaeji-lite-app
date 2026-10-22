@@ -15,6 +15,7 @@ import * as native from '../../platform/native.js';
 import * as thumbW from '../widgets/thumb.js';
 import * as gpslineW from '../widgets/gpsline.js';
 import { camDoor } from '../widgets/camdoor.js';
+import { sharedStage } from '../widgets/sharedstage.js';
 import * as config from '../../config.js';
 import { watermarkLines, watermarkLayout, drawWatermark, wmOpts, wmFont } from '../../core/watermark.js';
 import { dayKey } from '../../core/date.js';
@@ -28,6 +29,7 @@ const KEEP_CAM_MS = 30000;                                                   // 
 const LATER_MS = 1500;                                                       // 화면 꺼짐 방지·GPS 끄기를 미루는 시간(감사 #5 ②③ — 금방 돌아오면 브리지 호출 0)
 const QUICK_PIN_ACC = 15;                                                    // 위치 맞춘 도면에 내 위치로 바로 핀(1탭) — GPS ±15m 안일 때만
 const QUICK_PIN_AGE = 30000;
+const STAGE_AUTO_MS = 4000;                                                  // 같은 자리: 마지막 셔터 뒤 도면으로 돌아가는 시간(설정 stageAutoReturn)
 
 let active = null;                                                           // 지금 붙어 있는 화면(onBack 용)
 
@@ -114,7 +116,7 @@ function mount(root, params = {}, nav = {}) {
   let orient = 0, ratio = (safe(() => store.settings(), {}).photoRatio) || '4:3';
   // 띄운 것: 자료(docId — docFrame) 또는 도면(dwgId·dwgPage — drawingView). 한 번에 하나
   let layoutMode = 'cam', frame = null, docId = null, docsMod = null;
-  let dwgId = null, dwgPage = 1, dwgMod = null, dvMod = null, view = null, viewCompact = null, georef = null;
+  let dwgId = null, dwgPage = 1, dwgMod = null, dvMod = null, view = null, viewCompact = null, viewNew = false, georef = null;
   let placing = null;                                                        // 도면 위치 찍기 중: { pinId?, prevLayout }
   let restoreLayout = null;                                                   // 되살릴 배치(meta captureLayout) — 띄울 것이 실제로 뜰 때 적용(그 전엔 cam)
   const shots = new Map();                                                   // 누른 시각(takenAt) → { settled } — incoming 저장 확인용
@@ -127,7 +129,8 @@ function mount(root, params = {}, nav = {}) {
   const locText = el('span', { class: 'cap-loc-text' });
   const locSub = el('small', { class: 'cap-loc-sub' });
   const locChip = el('button', { type: 'button', class: 'cap-loc', 'data-testid': 'loc-chip', onclick: editLoc }, ic('map'), locText, locSub);
-  // [자료](자료함)·[도면](도면보관함) — 늘 보이는 위 줄. 아이콘 위 + 글자 아래(좁은 폭에서도 위치 칩이 넉넉하게)
+  // [자료](자료함)·[도면](도면보관함) — 늘 보이는 위 줄, 언제나 고르기 시트(v0.1.6 — 카메라 중 위 [도면] = 돌아가기 겸용은 없앰. 바꾸기는 셔터 위 바꾸기 단추 하나로).
+  // 아이콘 위 + 글자 아래(좁은 폭에서도 위치 칩이 넉넉하게)
   const docsBtn = el('button', { type: 'button', class: 'cap-top-btn cap-docs-btn', 'data-testid': 'cap-docs-btn', 'aria-label': '자료 열기', onclick: () => chooseDoc() }, ic('folder'), el('span', { class: 'cap-top-lab' }, '자료'));
   const dwgBtn = el('button', { type: 'button', class: 'cap-top-btn cap-drawing-btn', 'data-testid': 'cap-drawing-btn', 'aria-label': '도면 열기', onclick: () => chooseDrawing() }, ic('drawing'), el('span', { class: 'cap-top-lab' }, '도면'));
   const top = el('div', { class: 'cap-top' }, backBtn, locChip, docsBtn, dwgBtn);
@@ -145,7 +148,11 @@ function mount(root, params = {}, nav = {}) {
   const sugLab = el('span', { class: 'cap-sug-lab' }, '근처 도면');
   // 제안 = 셔터 위 줄의 단추 하나(누르면 띄우기). 늦게 떠도 뷰파인더·[카메라 열기]를 밀지 않는다
   const suggest = el('button', { type: 'button', class: 'cap-suggest', 'data-testid': 'cap-doc-suggest', hidden: true,
-    onclick: () => { if (!sug) return; if (sug.kind === 'dwg') setDrawing(sug.id, sug.page); else setDoc(sug.id); } },
+    onclick: async () => {
+      if (!sug) return;
+      if (sug.kind === 'dwg') await setDrawing(sug.id, sug.page); else await setDoc(sug.id);
+      if (!dead && shown()) stage?.showDrawing();                            // 같은 자리: 띄운 것을 바로 보인다
+    } },
     sugLab, sugName, el('span', { class: 'cap-doc-act' }, '띄우기'));
 
   const video = el('video', { class: 'cap-video', autoplay: '', muted: '', playsinline: '' });
@@ -159,8 +166,9 @@ function mount(root, params = {}, nav = {}) {
   const fbGallery = el('button', { type: 'button', class: 'cap-fb-sub', onclick: () => pickGallery() }, ic('image'), '갤러리에서 고르기');
   const fallback = el('div', { class: 'cap-fallback', 'data-testid': 'cam-fallback', hidden: true }, fbText, syscamBtn, el('div', { class: 'cap-fb-row' }, fbGallery));
   const vf = el('div', { class: 'cap-vf' }, video, wmCanvas, ratioBtn, torchBtn, fallback);
-  // 카메라 문 — 누르면 문 반쯤 + camera.open, 첫 프레임에 활짝(camdoor 부품)
-  const door = camDoor({ onOpen: () => openCam() });
+  // 카메라 문 — 누르면 문 반쯤 + camera.open, 첫 프레임에 활짝(camdoor 부품).
+  // 같은 창에서 띄운 것이 없을 때 보이는 문 가운데 [카메라 열기]는 같은 창을 거쳐 연다(바꾸기 단추·셔터 자리 [카메라]와 같은 길 — 실패 뒤 [다시 열기]는 그대로 openCam)
+  const door = camDoor({ onOpen: () => { if (stage && stage.mode() === 'drawing') stage.showCamera(); else openCam(); } });
   vf.append(door.el);
   const onFirstFrame = () => { if (!dead && camOpen && door.state() === 'opening') door.ready(); };
   video.addEventListener('playing', onFirstFrame);
@@ -197,11 +205,41 @@ function mount(root, params = {}, nav = {}) {
   const galleryBtn = el('button', { type: 'button', class: 'cap-gallery', 'data-testid': 'gallery-btn', onclick: () => pickGallery() }, el('span', { class: 'cap-rot' }, ic('image')), '갤러리');
   const shutter = el('button', { type: 'button', class: 'cap-shutter', 'data-testid': 'shutter', 'aria-label': '찍기', onclick: () => shoot() }, el('i'));
   const saveNext = el('button', { type: 'button', class: 'cap-next', 'data-testid': 'save-next', onclick: () => saveAndNext() }, continuing ? '다 찍었어요' : '저장하고 다음');
-  const bot = el('div', { class: 'cap-bot dock' },                        // .dock: router 가 스낵바·토스트를 이 위로 올린다(셔터를 가리지 않게)
-    el('div', { class: 'cap-countrow' }, pinBtn, suggest, countText, placeOk),
-    el('div', { class: 'cap-ctrl' }, galleryBtn, shutter, saveNext));
 
-  const screen = el('div', { class: 'cap', 'data-layout': 'cam', 'data-o': '0', 'data-pin': '0' }, top, docChip, stageWrap, gpsRow, contentRow, strip, spacer, bot, docWrap);
+  // 같은 창(설정 captureStage === 'shared' — v0.1.6 부터 기본, 사용자 지시 2026-10-22): 뷰파인더 상자 하나를 도면·카메라가 같이 쓴다 —
+  // 셔터 위 줄 오른쪽 바꾸기 단추 [카메라 | 도면](두 상태에서 같은 자리)로 바꾼다: 카메라로 = 문 열림, 도면으로 = 문 닫힘(매번 움직임).
+  // 도면이 보이면 셔터 자리도 [카메라](같은 일). 닫은 뒤 60초는 카메라를 쉬게(따뜻하게) 둬 다시 열기가 즉시. 자동 돌아가기는 설정(기본 끔).
+  // 'split'(작은 창 — 나란히 보기)은 아래 stage 가 null 이라 예전 그대로
+  let stage = null, stageRest = false, stageHold = false;
+  const stageAuto = () => (safe(() => store.settings(), {}).stageAutoReturn !== true || !shown() ? 0 : STAGE_AUTO_MS);   // 띄운 것이 없으면 돌아갈 곳이 없다
+  if (!syscamMode && safe(() => store.settings(), {}).captureStage === 'shared') {
+    stage = sharedStage({
+      drawingEl: docWrap, videoEl: video, cameraEl: vf, door,
+      openCamera: async () => { stageRest = false; setRest(); if (!camOpen) await openCam(); },
+      closeCamera: ({ keepWarm }) => { if (keepWarm) { stageRest = true; setRest(); } else { stageRest = false; closeCam(); setRest(); } },
+      autoReturnMs: 0,                                                       // 띄운 것이 생기면 setLayout 이 설정대로 켠다
+      onModeChange: m => {
+        if (dead) return;
+        frame?.setInteractive?.(!!docId && (m === 'drawing' || m === 'closing'));
+        screen.dataset.stage = m;
+        if (placing && (m === 'opening' || m === 'camera')) cancelPlace();   // 카메라로 바꾸면 위치 찍기는 그만(가려진 십자에 [여기에 찍기]가 남지 않게)
+      },
+      // empty 를 주지 않는다 — 띄운 것이 없으면 닫힌 카메라 문 + [카메라 열기](작은 창·v0.1.4 와 같은 첫 화면). 도면은 선택이라
+      // 사진만 찍는 사람에게 「도면을 띄우면 여기 보여요」·[도면 고르기]를 먼저 내밀지 않는다(v0.1.6 검토). 도면은 위 줄 [도면]으로
+    });
+    box.replaceChildren(stage.el);                                           // vf → 카메라 층, docWrap → 도면 층(한 번만 — iframe·도면 보기를 붙이기 전)
+    cleanups.push(() => stage?.destroy());
+    // 되살릴 도면·자료가 없으면 처음부터 닫힌 문(첫 그림부터 — 어두운 빈 상자가 보였다 문으로 바뀌지 않게). 있으면 initDocs 가 띄운 뒤 정한다
+    const willShow = !!(params.drawingId || params.docId || safe(() => store.meta('captureDrawing', null), null) || safe(() => store.meta('captureDoc', null), null));
+    if (!willShow) stage.setEmpty(true);
+  }
+
+  const bot = el('div', { class: 'cap-bot dock' },                        // .dock: router 가 스낵바·토스트를 이 위로 올린다(셔터를 가리지 않게)
+    el('div', { class: 'cap-countrow' }, pinBtn, suggest, countText, placeOk, ...(stage ? [stage.toggleButton()] : [])),
+    el('div', { class: 'cap-ctrl' }, galleryBtn, stage ? stage.shutterSlot(shutter) : shutter, saveNext));
+
+  const screen = el('div', { class: 'cap', 'data-layout': 'cam', 'data-o': '0', 'data-pin': '0', ...(stage ? { 'data-stage': 'drawing' } : {}) },
+    top, docChip, stageWrap, gpsRow, contentRow, strip, spacer, bot, ...(stage ? [] : [docWrap]));
   root.append(screen);
 
   // ---------- 상태 그리기 ----------
@@ -316,6 +354,7 @@ function mount(root, params = {}, nav = {}) {
   // 폰을 눕히면 띠가 옆으로 가니 반대쪽으로. iframe·도면 보기는 옮기지 않고 자리만 바꾼다
   const DOCK_MIN = 96;
   function placeDoc() {
+    if (stage) return;                                                       // 같은 자리: 도면 층이 상자를 채운다(sharedstage.css)
     if (!shown() || docWrap.hidden) return;
     const sr = screen.getBoundingClientRect();
     if (!sr.width) return;
@@ -433,7 +472,9 @@ function mount(root, params = {}, nav = {}) {
   // 카메라 미리보기(트랙 끔 + 멈춤, 마지막 그림이 남음)·방향 감지·워터마크 미리보기·근처 도면 다시 찾기를 쉰다 — 키보드(IME)와 GPU·메인 스레드를 다투지 않게.
   // 시트가 닫히면 곧바로 다시(트랙을 놓지 않으므로 다시 여는 지연 없음). dom.onTyping 이 있으면 그것도 듣는다(다른 시트·글칸)
   function setRest() {
-    const on = !dead && (restN > 0 || typingOn);
+    const sheet = restN > 0 || typingOn;
+    if (stage && sheet !== stageHold) { stageHold = sheet; stage.hold(sheet); }   // 같은 자리: 시트·글 입력 중엔 자동 돌아가기 멈춤
+    const on = !dead && (sheet || stageRest);                                 // stageRest: 같은 자리에서 도면이 보이는 동안 카메라 쉼(따뜻하게)
     if (on === resting) return;
     resting = on;
     safe(() => camera.pause?.(on));
@@ -478,16 +519,20 @@ function mount(root, params = {}, nav = {}) {
     opening = (async () => {
       try {
         camCaps = await camera.open(video);
-        if (dead) { safe(() => camera.close()); return; }
+        // 그사이 이 화면이 카메라를 놓았으면(closeCam·화면 떠남 — 세대가 바뀜) camera 는 이미 닫혔거나 새 열기가 주인이다.
+        // 여기서 camera.close() 를 부르면 새로 연 카메라까지 닫혀 가짜 「카메라를 열지 못했어요」가 떴다(v0.1.6 검토 — 닫았다 곧 다시 열기·크게 보기 다녀오기)
+        if (dead || gen !== camGen) return;
         const ds = door.state();
-        if (gen !== camGen || (ds !== 'opening' && ds !== 'open')) { safe(() => camera.close()); return; }   // 여는 사이 백그라운드·닫힘
+        if (ds !== 'opening' && ds !== 'open') { closeCam(); return; }       // 여는 사이 문이 닫힘(이 세대 몫 — 닫는다)
         camOpen = true; hideFallback();
         torchBtn.hidden = !camCaps?.torch;
         if (video.readyState >= 2) door.ready();                             // playing 이 먼저 지나갔으면(붙잡아 둔 카메라를 이어 쓸 때)
       } catch (err) {
-        console.warn('카메라를 열지 못했어요', err);
+        if (gen !== camGen) return;                                          // 지난 세대 — 새 열기가 제 결과를 본다(camOpen 을 건드리지 않는다)
         camOpen = false;
-        if (!dead && gen === camGen && !document.hidden) failDoor(err);
+        if (err?.code === 'cancelled') return;                               // 닫았거나 새로 열어 그만둔 열기(camera.js) — 실패가 아니다
+        console.warn('카메라를 열지 못했어요', err);
+        if (!dead && !document.hidden) failDoor(err);
       } finally {
         if (gen === camGen) opening = null;
       }
@@ -497,6 +542,8 @@ function mount(root, params = {}, nav = {}) {
   // 쓰는 중의 끊김·백그라운드는 camera.js 가 알려 준다 — 문을 닫고(돌아와도 자동으로 열지 않는다) 실패면 이유
   const offCam = fn(camera, 'onState') ? camera.onState((st, err) => {
     if (dead) return;
+    if (st === 'paused' && stage?.mode() === 'drawing' && stage.isWarm()) { stage.suspend(); return; }   // 쉬던 카메라가 돌아와서 저절로 다시 열리지 않게
+    if ((st === 'closed' || st === 'error') && stage) stage.markCold();
     if (st === 'open') { if (!syscamMode) camOpen = true; }
     else if (st === 'paused') { if (door.state() !== 'closed') { closeCam(); door.close({ animate: false }); } }
     else if (st === 'closed') camOpen = false;
@@ -590,10 +637,13 @@ function mount(root, params = {}, nav = {}) {
   async function shoot() {
     if (leaving || dead) return;
     if (camFailed) return shootSystem();                                     // 휴대폰 카메라 앱 모드(cam-fallback)
+    if (stage && stage.mode() !== 'camera' && stage.mode() !== 'opening') { stage.showCamera(); return; }   // 같은 자리: 도면이 보이는데 셔터 = [카메라]
     if (!camOpen || door.state() !== 'open') {                               // 문이 닫혀 있으면 셔터 = [카메라 열기](실패 뒤엔 [다시 열기])
       if (door.state() === 'closed') door.press(); else dom.toast?.('카메라 켜는 중이에요');
       return;
     }
+    if (stage?.mode() === 'opening' && !(await stage.live())) return;       // 따뜻하게 연 바로 그 순간 — 새 프레임 하나(수 ms)
+    stage?.noteShot();                                                       // 자동 돌아가기 다시 셈
     flash();
     safe(() => native.markBusy?.());                                          // 갤러리 원본·미러 쓰기를 2초 미룬다(브리지가 다음 셔터·글을 막지 않게)
     if (grabbing) return;                                                    // 같은 순간(프레임을 잡는 몇 ms)의 두 번째 탭 — 눌린 표시만
@@ -681,7 +731,7 @@ function mount(root, params = {}, nav = {}) {
   }
 
   async function editLoc() {
-    const v = await resting_(dom.textSheet({ title: '위치', value: loc || '', placeholder: '예: 101동 5층 복도', multiline: false, select: 'lastNumber' }));
+    const v = await resting_(dom.textSheet({ title: '위치', value: loc || '', placeholder: '위치를 적어 주세요', multiline: false, select: 'lastNumber' }));
     if (v == null || dead) return;
     const text = String(v).trim();
     loc = text; freshHint = false; params.freshHint = false;
@@ -696,7 +746,7 @@ function mount(root, params = {}, nav = {}) {
   }
 
   async function editContent() {
-    const v = await resting_(dom.textSheet({ title: '내용', value: content || '', placeholder: '예: 배관 보온 작업 완료', multiline: true }));
+    const v = await resting_(dom.textSheet({ title: '내용', value: content || '', placeholder: '내용을 적어요', multiline: true }));
     if (v == null || dead) return;
     const text = String(v).trim();
     content = text;
@@ -760,12 +810,29 @@ function mount(root, params = {}, nav = {}) {
   function goSub(name, p = {}) {
     if (dead || leaving || typeof nav.go !== 'function') return;
     subNav = true;
-    params.camOn = camOpen && !camFailed;
+    params.camOn = camOpen && !camFailed && (!stage || stage.mode() === 'camera' || stage.mode() === 'opening');   // 같은 자리에서 도면을 보던 중이면 돌아와도 도면
     try { nav.go(name, p); } catch (err) { subNav = false; params.camOn = false; console.warn('화면을 열지 못했어요', name, err); }
   }
 
   // ---------- 자료·도면 띄우고 촬영(§10.6, 도면보관함 §5.6) ----------
   function setLayout(mode) {
+    if (stage) {                                                             // 같은 자리: 배치 바꾸기 없음 — 상자는 늘 뷰파인더 크기, 도면은 늘 크게(손짓)
+      layoutMode = 'cam'; screen.dataset.layout = 'cam';
+      layoutBtn.hidden = true; dwgTap.hidden = true;
+      vf.removeAttribute('data-testid'); docWrap.removeAttribute('data-testid');
+      frame?.setInteractive?.(!!docId && stage.mode() !== 'camera' && stage.mode() !== 'opening');
+      if (dwgId) buildView('doc');
+      stage.setEmpty(!shown());
+      stage.setAutoReturn(stageAuto());
+      fit();
+      if (view && viewNew) setTimeout(() => {                                // 새로 만든 보기 — 크기가 정해진 뒤 한 번 맞춘다
+        if (dead || !view) return;
+        safe(() => view.refresh?.());
+        if (!placing && !(myPin()?.drawingId === dwgId)) safe(() => view.engine?.()?.fit?.({ animate: false }));
+      }, 180);
+      viewNew = false;
+      return;
+    }
     layoutMode = shown() ? mode : 'cam';
     screen.dataset.layout = layoutMode;
     if (layoutMode === 'doc') { vf.setAttribute('data-testid', 'cap-cam-mini'); docWrap.removeAttribute('data-testid'); }
@@ -784,7 +851,7 @@ function mount(root, params = {}, nav = {}) {
     }, 180);
   }
   function toggleLayout() {
-    if (!shown()) return;
+    if (stage || !shown()) return;
     const m = layoutMode === 'cam' ? 'doc' : 'cam';
     if (placing && m === 'cam') cancelPlace();
     setLayout(m);
@@ -792,6 +859,7 @@ function mount(root, params = {}, nav = {}) {
   }
   function paintChip() {
     docChip.hidden = !shown();
+    if (stage) { if (docId && !dwgId) stage.setDrawLabel('자료', 'doc'); else stage.setDrawLabel('도면', 'drawing'); }   // 바꾸기 단추의 도면 쪽 칸 글
     if (dwgId) {
       const d = safe(() => dwgMod?.drawing?.(dwgId), null);
       const pages = d?.pages?.length || 1;
@@ -890,7 +958,7 @@ function mount(root, params = {}, nav = {}) {
     cancelPlace();
     safe(() => view?.destroy?.()); view = null;
     dwgId = d.id; dwgPage = pg;
-    if (!buildView(restoreLayout ?? layoutMode)) { dwgId = null; dom.toast?.('도면을 띄우지 못했어요'); return; }
+    if (!buildView(stage ? 'doc' : (restoreLayout ?? layoutMode))) { dwgId = null; dom.toast?.('도면을 띄우지 못했어요'); return; }
     dwgBox.hidden = false;
     docWrap.hidden = false; setSugHidden(true);
     paintChip(); paintPinBtn();
@@ -900,7 +968,7 @@ function mount(root, params = {}, nav = {}) {
   }
   // 도면 보기 만들기 — 배치마다 compact 가 달라(작은 창: 손짓·나침반 없음 / 크게: 손짓·[여기에 찍기]) 바뀔 때만 다시 만든다(타일은 캐시라 가볍다).
   // 내 위치·보는 방향(gps·나침반 센서)은 위치 맞춘 도면을 「크게」 볼 때만 — 작은 창에서 센서가 셔터·글 입력과 다투지 않게
-  function buildView(mode = layoutMode) {
+  function buildView(mode = stage ? 'doc' : layoutMode) {
     if (!dwgId || !fn(dvMod, 'drawingView')) return false;
     const compact = mode !== 'doc';
     if (view && viewCompact === compact) return true;
@@ -916,7 +984,7 @@ function mount(root, params = {}, nav = {}) {
         onTapPin: pinId => onTapPin(pinId),
       });
     } catch (err) { console.warn('도면 보기 실패', err); view = null; viewCompact = null; return false; }
-    viewCompact = compact;
+    viewCompact = compact; viewNew = true;
     dwgBox.replaceChildren(view.el);
     return true;
   }
@@ -942,6 +1010,7 @@ function mount(root, params = {}, nav = {}) {
       restoreLayout = null;
       store.setMeta('captureLayout', 'doc')?.catch?.(() => {});
       if (id !== docId) await setDoc(id, 'doc'); else setLayout('doc');
+      if (!dead && docId) stage?.showDrawing();                              // 같은 자리: 고른 자료를 바로 보인다
     } finally { picking = false; }
   }
   // [도면] — 도면보관함 고르기 시트(drawpicker). 처음엔 작은 창(카메라 크게) — 지금 배치 그대로
@@ -956,6 +1025,7 @@ function mount(root, params = {}, nav = {}) {
       if (!id || dead) return;
       restoreLayout = null;
       await setDrawing(id);
+      if (!dead && dwgId) stage?.showDrawing();                              // 같은 자리: 고른 도면을 바로 보인다
     } finally { picking = false; }
   }
   // 전체 화면 — 자료: docview, 도면: drawview(그 묶음 핀). 촬영 상태는 params·meta 가 들고 있어 돌아오면 그대로
@@ -996,6 +1066,7 @@ function mount(root, params = {}, nav = {}) {
   // 위치 맞춘 도면 + GPS 가 괜찮으면 내 위치에 바로(1탭), 아니면 도면 크게 + 찍기 모드(탭/조준점) → onPlace
   async function startPin() {
     if (pinBusy || dead || !dwgId || !view) return;
+    stage?.showDrawing({ animate: false });                                  // 같은 자리: 도면 위에 위치 찍기
     pinBusy = true;
     try {
       try { await ensureRecord(); }                                          // 묶음 먼저(§4.5 — 핀이 가리킬 묶음이 저장돼 있어야)
@@ -1164,6 +1235,7 @@ function mount(root, params = {}, nav = {}) {
     };
     if (needNow) await openDwg();
     else { const t = setTimeout(openDwg, 1200); cleanups.push(() => clearTimeout(t)); paintSuggest(true); }
+    if (!dead && stage) stage.setEmpty(!shown());                            // 같은 자리: 띄울 것이 없으면 한 줄 안내 + [도면 고르기]
     const offD = docsMod && fn(docsMod, 'onDocs') ? docsMod.onDocs(() => { if (docId && !docOf(docId)) setDoc(null); else paintSuggest(true); }) : null;
     if (offD) cleanups.push(offD);
   }
@@ -1176,6 +1248,7 @@ function mount(root, params = {}, nav = {}) {
     if (ch?.settings) {
       const s = safe(() => store.settings(), {});
       if (s.photoRatio && s.photoRatio !== ratio) { ratio = s.photoRatio; paintRatio(); fit(); }
+      stage?.setAutoReturn(stageAuto());                                     // captureStage 자체는 다음에 촬영 화면에 들어올 때부터
       drawWm();
     }
     if (recId && ch?.records?.has?.(recId)) {
@@ -1209,7 +1282,10 @@ function mount(root, params = {}, nav = {}) {
   setOrient(readOrient());                                                   // 지금 방향(아래 선언이 다 끝난 뒤에)
   requestAnimationFrame(fit);
   if (syscamMode) { door.el.hidden = true; openCam(); }
-  else if (camOnAtMount && !document.hidden) { door.openNow(); openCam(); }   // 크게 보기·지도에서 돌아옴 — 붙잡아 둔 카메라를 바로 이어 쓴다(문 움직임 없이)
+  else if (camOnAtMount && !document.hidden) {                               // 크게 보기·지도에서 돌아옴 — 붙잡아 둔 카메라를 바로 이어 쓴다(문 움직임 없이)
+    door.openNow();
+    if (stage) stage.showCamera(); else openCam();                           // 같은 자리: 카메라 층으로(stage 가 openCamera → openCam)
+  }
   startGps();
   initDocs();
 
@@ -1218,6 +1294,7 @@ function mount(root, params = {}, nav = {}) {
     get leaving() { return leaving; }, leave,
     back() {
       if (placing) { cancelPlace(true); return; }
+      if (stage && shown() && stage.showDrawing()) return;                   // 같은 자리: 카메라가 보이면 도면으로(크게 → 작게와 같은 자리)
       if (shown() && layoutMode === 'doc') { toggleLayout(); return; }
       leave();
     },

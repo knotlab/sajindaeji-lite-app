@@ -50,6 +50,12 @@
 .dp-cur .ic{stroke-width:3}
 .dp-none{padding:24px 8px;text-align:center;font-size:15px;color:var(--ink2);line-height:1.5}
 
+/* 폴더(widgets/folderbar.js — 모양은 folders.css). 시트 안에서는 줄 상자 배경을 시트와 같게, 빵 부스러기는 목록 맨 위에 붙여 */
+.dp-folders{margin-top:4px}
+.dp-folders .fb-bar{position:sticky;top:0;z-index:1;margin:0 -16px;background:var(--paper);border-bottom:1px solid #E6E8E4}
+.dp-folders .fb-rows{margin:0;border-radius:0}
+.dp-folders .fb-open{padding-left:4px}
+
 /* 비었을 때 */
 .dp-empty{display:grid;justify-items:center;gap:8px;padding:32px 8px 16px;text-align:center}
 .dp-bigico{width:56px;height:56px}

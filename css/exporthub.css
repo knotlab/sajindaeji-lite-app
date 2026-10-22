@@ -1,0 +1,93 @@
+/* 내보내기 탭 exporthub(v0.1.5) — 접두어 xh-. 크기 기준은 CLAUDE.md 사용성 표:
+   본문 16 · 보조 14 · 목록 제목 16 굵게, 칩 44, 보조 버튼 48, 하단 주 버튼 56(노랑은 [카톡으로 보내기] 하나),
+   검정 2px 는 주 버튼·선택된 칩·체크된 칸에만, 목록은 흰 바탕 + 1px 연한 선. 아래 고정 칸은 탭 막대 위(#view 밖에 탭 막대가 있으면 저절로). */
+
+.xh-scr .bar{margin-bottom:0}
+.xh-chips{margin-top:0;margin-bottom:8px}
+.xh-chip .ic{margin-left:-2px}
+.xh-scr .f-date-input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}   /* 숨은 날짜 칸(home.css 와 같게 — 이 파일만으로도 숨게) */
+
+/* 기간 — 시작 ~ 끝 */
+.xh-period{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.xh-date{flex:1 1 0;min-width:0;min-height:48px;padding:0 10px}
+.xh-tilde{flex:none;font-weight:800;color:var(--ink2)}
+
+/* 목록 머리: 「10/22(목) · 묶음 4 · 사진 9」 + [모두 해제] */
+.xh-sec{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;margin:8px 0 4px}
+.xh-sum{min-width:0;font-size:14px;font-weight:800;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-over{margin:0 0 8px}
+.xh-all{flex:none;min-height:44px;padding:0 10px;margin-right:-10px;border-radius:8px;font-size:15px;font-weight:800;color:var(--ink);
+  text-decoration:underline;text-underline-offset:3px}
+.xh-all:active{background:rgba(0,0,0,.08)}
+
+/* 묶음 줄 — 줄 전체가 체크 */
+.xh-list{margin-bottom:8px}
+.xh-row{display:flex;align-items:flex-start;gap:12px;width:100%;min-height:56px;padding:12px 16px 12px 12px;border-top:1px solid var(--soft);
+  background:var(--paper);text-align:left;color:var(--ink);transition:opacity var(--dur)}
+.xh-list > :first-child{border-top:0}
+.xh-row:active{background:#F1F2EF}
+.xh-check{flex:none;display:grid;place-items:center;width:24px;height:24px;margin-top:0;border-radius:6px;border:2px solid var(--line);background:var(--paper);color:transparent}
+.xh-row[aria-checked="true"] .xh-check{background:#000;border-color:#000;color:#fff}
+.xh-row[aria-checked="true"] .xh-check .ic{stroke-width:3}
+.xh-row[aria-checked="false"] .xh-body{opacity:.55}            /* 뺀 묶음 — 체크 모양(빈 칸)으로도 알 수 있다 */
+.xh-body{flex:1;min-width:0;display:grid;gap:2px}
+.xh-head{display:flex;align-items:baseline;gap:8px}
+.xh-loc{flex:1;min-width:0;font-size:16px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-loc.muted{color:var(--ink2);font-weight:700}
+.xh-meta{flex:none;font-size:14px;font-weight:700;color:var(--ink2);font-variant-numeric:tabular-nums}
+.xh-content{font-size:14px;color:var(--ink2);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-thumbs{display:grid;grid-template-columns:repeat(3,64px) auto;gap:4px;margin-top:4px;align-items:center;justify-content:start}
+.xh-thumbs .thumb-box{border-radius:4px}
+.xh-th{border-radius:4px}
+.xh-more{display:grid;place-items:center;min-width:40px;height:48px;padding:0 6px;border-radius:4px;background:var(--concrete);font-size:14px;font-weight:800;color:var(--ink2)}
+.xh-dayhead{padding:8px 16px 6px;background:#F1F2EF;border-top:1px solid var(--soft);font-size:14px;font-weight:800;color:var(--ink2)}
+.xh-empty{padding:32px 16px;text-align:center;font-weight:700;color:var(--ink2)}
+
+/* 아래 고정 — 안내 · 진행 · 보조 두 개 · 주 버튼(맨 아래 = 엄지) */
+.xh-dock{gap:8px;padding-top:12px}
+.xh-subrow{gap:8px}
+.xh-subbtn{min-height:48px;padding:6px 8px;font-size:15px;gap:6px}
+.xh-subbtn .ic{color:var(--ink2)}
+.xh-send{min-height:56px;justify-content:center;gap:10px;padding:6px 16px;border-radius:14px}
+.xh-send-t{display:grid;justify-items:start;min-width:0;text-align:left}
+.xh-send-t b{font-size:18px;font-weight:900;line-height:1.2;letter-spacing:-.2px}
+.xh-send-s{max-width:100%;font-size:14px;font-weight:700;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 진행 — 막대 + 글 + [그만] */
+.xh-prog{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 4px 0 12px;border-radius:10px;background:var(--paper);border:1px solid var(--soft)}
+.xh-prog-bar{flex:0 0 64px;height:6px;border-radius:3px;background:var(--concrete);overflow:hidden}
+.xh-prog-fill{display:block;height:100%;width:0;background:#000;transition:width var(--dur)}
+.xh-prog-t{flex:1;min-width:0;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xh-prog-stop{flex:none;min-width:48px;min-height:44px;padding:0 12px;border-radius:8px;font-size:15px;font-weight:800;color:var(--ink)}
+.xh-prog-stop:active{background:#F1F2EF}
+
+/* 보낸 뒤 안내 */
+.xh-notice{display:flex;align-items:center;gap:8px;min-height:52px;padding:4px 0 4px 12px;border-radius:10px;background:var(--paper);border:1px solid var(--soft)}
+.xh-notice-ic{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--pass);color:#fff}
+.xh-notice-ic .ic{stroke-width:3}
+.xh-notice.warn .xh-notice-ic{background:var(--fail)}
+.xh-notice-body{flex:1;min-width:0;display:grid}
+.xh-notice-t{font-size:15px;font-weight:800;line-height:1.3}
+.xh-notice-s{font-size:13px;font-weight:600;color:var(--ink2);line-height:1.3}
+.xh-notice-btn{flex:none;min-height:44px;padding:0 8px;border-radius:8px;font-size:14px;font-weight:800;color:var(--ink);text-decoration:underline;text-underline-offset:3px}
+.xh-notice-btn:active,.xh-notice-x:active{background:#F1F2EF}
+.xh-notice-x{flex:none;width:44px;height:44px;display:grid;place-items:center;border-radius:8px;color:var(--ink2)}
+
+/* 엑셀 결과 시트 */
+.xh-file{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--soft);border-radius:var(--r)}
+.xh-file .ic{color:var(--ink2)}
+.xh-file-t{flex:1;min-width:0;display:grid}
+.xh-file-t b{font-size:16px;font-weight:800;overflow-wrap:anywhere}
+.xh-file-t small{font-size:14px;color:var(--ink2)}
+.xh-result-btns > .secondary{flex:0 0 40%}
+
+@media (max-width:370px){
+  .xh-subbtn{font-size:14px;padding:6px 6px;gap:4px}
+  .xh-thumbs{grid-template-columns:repeat(3,56px) auto}
+  .xh-more{height:42px}
+}
+/* 빈 날 안내 + [그 날 보기](보조 48px) */
+.xh-empty{display:flex;flex-direction:column;align-items:center;gap:12px}
+.xh-empty[hidden]{display:none}
+.xh-empty-go{min-height:48px;padding:0 20px;width:auto}
+.xh-empty-go[hidden]{display:none}

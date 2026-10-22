@@ -1,0 +1,40 @@
+/* 끌어 순서 바꾸기(widgets/reorder.js) — CLAUDE.md 사용성 표: 손잡이 48px, 움직임 180ms(prefers-reduced-motion 이면 없음),
+   노랑 없음(주 행동이 아니다), 검정 2px 없음. 든 것만 살짝 그림자·조금 커짐(끌 때만). */
+
+/* 길게 누르기 목록: 길게 눌러도 글자 고르기·그림 메뉴·그림 끌기가 뜨지 않게 */
+.ro-long > *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.ro-long img{-webkit-user-drag:none}
+
+/* 끄는 동안·놓는 동안: 나머지 항목은 transform 만으로 비켜 간다(배치 다시 계산 없음) */
+.ro-on{-webkit-user-select:none;user-select:none}
+.ro-on > *{transition:transform var(--ro-dur,180ms) cubic-bezier(.2,.75,.25,1)}
+.ro-flip > *{transition:none !important}
+/* 끄는 동안 화면 근처 항목은 미리 합성 레이어(비켜 갈 때마다 레이어를 만들고 지우며 다시 그리지 않게 — js 가 들 때 붙이고 내려앉으면 뗀다) */
+.ro-wc{will-change:transform}
+
+/* 놓일 자리(원래 항목) — 내용은 숨기고 옅은 칸 + 점선(색만이 아니라 모양으로도 「여기」) */
+.ro-slot{background:rgba(0,0,0,.06) !important;box-shadow:none !important;outline:2px dashed var(--line,#9EA39C);outline-offset:-6px}
+.ro-slot > *{visibility:hidden}
+
+/* 떠 있는 사본 — body 에 position:fixed(목록 상자의 overflow·contain:paint 에 잘리지 않게). 위치·크기는 js 가 줄 때 그대로 */
+.ro-ghost{position:fixed;z-index:65;margin:0;pointer-events:none;box-sizing:border-box;will-change:transform;transform-origin:50% 50%;
+  box-shadow:0 0 0 rgba(0,0,0,0);transition:scale 150ms ease-out,box-shadow 150ms ease-out;cursor:grabbing}
+.ro-ghost.ro-up{box-shadow:0 10px 28px rgba(0,0,0,.22),0 2px 6px rgba(0,0,0,.14)}
+
+/* 메뉴·키로 옮긴 항목 — 잠깐 표시(배경이 옅게 짙어졌다 돌아온다) */
+.ro-moved{animation:ro-moved 700ms ease-out}
+@keyframes ro-moved{from{background-color:#D5D8D2}}
+
+/* 손잡이 ≡ — 48px 정사각, 누르는 즉시 든다. touch-action:none 이라 여기서는 스크롤이 시작되지 않는다(→ pointercancel 없음) */
+.ro-handle,[data-ro-handle]{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.ro-handle{width:48px;height:48px;display:grid;place-items:center;flex:none;border-radius:10px;color:var(--ink2,#474C52);cursor:grab}
+.ro-handle:active{background:rgba(0,0,0,.08)}
+.ro-on .ro-handle{cursor:grabbing}
+
+/* 화면 읽기 알림(보이지 않음) */
+.ro-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+
+@media (prefers-reduced-motion:reduce){
+  .ro-on > *,.ro-ghost{transition:none !important}
+  .ro-moved{animation:none}
+}

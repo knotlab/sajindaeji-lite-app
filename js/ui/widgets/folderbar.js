@@ -7,6 +7,9 @@
 //   selection({ onChange, onMove, onDelete })     여러 개 선택 + 아래 고정 막대('n개 고름' · [지우기] · [폴더로 옮기기] · [취소])
 //   longPress(el, { onTap, onLong })              길게 누르기(450ms, 10px 넘게 움직이면 취소, 누른 뒤 click 은 먹는다)
 //   whereText(scope, itemId) / whereTag(…)        찾기 결과 줄에 작게 보일 폴더 경로('101동 › 평면', 맨 위면 '' / null)
+//   newFolderRow({ scope, parent })               폴더 줄 자리의 보조 줄 「+ 새 폴더」(폴더가 없어도 — ⋮ 안에만 두면 못 찾았다, v0.1.5 검토)
+//   selectHint(scope)                             처음 한 번만 「길게 누르면 여러 개 골라 폴더로 옮겨요」 한 줄
+//   moreIcon()                                    줄 끝 ⋮(자료·도면·폴더 줄이 같은 모양)
 // 사용자 글(폴더 이름)은 textContent 로만 — innerHTML 금지.
 import { h, icon, openSheet, textSheet, choose, snackbar, toast, syncList, liftSnack } from '../dom.js';
 import * as F from '../../data/folders.js';
@@ -15,7 +18,19 @@ export const ROOT_LABEL = Object.freeze({ docs: '자료함', drawings: '도면�
 const ITEM_WORD = Object.freeze({ docs: '자료', drawings: '도면' });
 const LONG_MS = 450, MOVE_PX = 10;
 const said = e => (e?.code && F.MESSAGES[e.code]) || (e?.code === 'QUOTA' ? '저장 공간이 부족해요' : '하지 못했어요');
+const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* 저장 못 해도 그만 */ } };
+// 줄 끝 ⋮ — 점 셋(선 끝 둥글게). 스프라이트 i-more 는 채움 원이라 줄마다 모양이 달라 보였다
+export function moreIcon(size = 24) {
+  const svg = h('svg', { class: 'ic', viewBox: '0 0 24 24', width: size, height: size, 'aria-hidden': 'true', focusable: 'false' });
+  for (const d of ['M12 5h.01', 'M12 12h.01', 'M12 19h.01']) svg.append(h('path', { d }));
+  return svg;
+}
 const safe = f => { try { return f(); } catch (e) { console.error(e); return undefined; } };
+// 모양(css/folders.css)은 index.html 이 싣는다. 그 줄이 없는 판(통합 전)·시험 페이지에서도 모양이 깨지지 않게 한 번만 붙인다
+if (typeof document !== 'undefined' && !document.querySelector('link[href$="folders.css"]')) {
+  document.head.append(h('link', { rel: 'stylesheet', href: new URL('../../../css/folders.css', import.meta.url).href }));
+}
 
 // ---------- 길게 누르기 ----------
 // 손가락(터치)·마우스 모두. 데스크톱 오른쪽 클릭(contextmenu)도 길게 누르기로. 해제 함수를 돌려준다
@@ -127,7 +142,7 @@ export function folderRows({ scope, parentId = null, onOpen, onMenu, items = nul
       h('span', { class: 'fb-main' }, h('span', { class: 'fb-name', text: f.name }), h('span', { class: 'fb-sub', text })));
     longPress(open, { onTap: () => onOpen?.(f.id), onLong: () => onMenu?.(f.id) });
     return h('div', { class: 'fb-row', role: 'listitem', 'data-testid': 'folder-row', 'data-id': f.id }, open,
-      onMenu ? h('button', { type: 'button', class: 'icbtn fb-menu', 'data-testid': 'folder-menu', 'aria-label': `${f.name} 폴더 메뉴`, onclick: () => onMenu(f.id) }, icon('more')) : null);
+      onMenu ? h('button', { type: 'button', class: 'icbtn fb-menu', 'data-testid': 'folder-menu', 'aria-label': `${f.name} 폴더 메뉴`, onclick: () => onMenu(f.id) }, moreIcon()) : null);
   };
   function draw() {
     const list = F.folders(scope, cur);
@@ -161,12 +176,36 @@ export async function newFolderSheet(scope, parentId = null) {
   } catch (e) { console.error('폴더 만들기 실패', e); toast(said(e)); return null; }
 }
 
+// 폴더 줄 자리의 「+ 새 폴더」 — parent(): 지금 폴더(null = 맨 위). 만든 뒤 onMade(id)
+export function newFolderRow({ scope, parent = () => null, onMade = null } = {}) {
+  const el = h('button', { type: 'button', class: 'fb-new', 'data-testid': 'folder-new' }, icon('plus', 20), h('span', { text: '새 폴더' }));
+  el.addEventListener('click', async () => {
+    if (el.dataset.busy) return;
+    el.dataset.busy = '1';
+    try { await F.ready().catch(() => null); const id = await newFolderSheet(scope, safe(parent) || null); if (id) safe(() => onMade?.(id)); }
+    finally { delete el.dataset.busy; }
+  });
+  return el;
+}
+
+// 처음 한 번만 보이는 고르기 안내. show(조건) — 조건이 처음 맞은 화면에서만 보이고(그 화면을 떠날 때까지), 다음부터는 안 보인다. done() = 고르기를 써 봄
+export function selectHint(scope) {
+  const key = `lite.selHint.${scope}`;
+  let seen = lsGet(key) === '1', on = false;
+  const el = h('p', { class: 'fb-hint', 'data-testid': 'folder-hint', hidden: true }, `길게 누르면 여러 개 골라 폴더로 옮겨요`);
+  return {
+    el,
+    show(cond) { if (cond && !seen) { seen = true; on = true; lsSet(key, '1'); } el.hidden = !(on && cond); },
+    done() { on = false; seen = true; el.hidden = true; lsSet(key, '1'); },
+  };
+}
+
 // ---------- 폴더 메뉴 ----------
-// → Promise<'rename' | 'move' | 'delete' | null>
-export async function folderMenu(folderId) {
+// → Promise<'rename' | 'move' | 'delete' | null>. items: 살아 있는 자료 목록(() => [...]) — 영구 삭제·휴지통 자료를 개수에서 뺀다
+export async function folderMenu(folderId, { items = null } = {}) {
   const f = F.folder(folderId);
   if (!f || f.deletedAt) return null;
-  const c = F.counts(f.scope)[f.id] || { folders: 0, items: 0 };
+  const c = F.counts(f.scope, { items: items ? safe(items) || [] : null })[f.id] || { folders: 0, items: 0 };
   const has = c.folders || c.items;
   const v = await choose({ title: f.name, options: [
     { value: 'rename', label: '이름 바꾸기' },

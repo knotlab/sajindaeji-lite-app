@@ -1,0 +1,26 @@
+/* 날짜 넘기기(widgets/daypager.js) — 화면(.screen) 안에서 남은 높이를 채운다(.scroll 클래스로 flex:1).
+   화면 좌우 여백(16px) 밖까지 넓혀 화면 폭 전체가 넘기는 판. 각 페이지는 스스로 세로 스크롤(touch-action: pan-y — 가로는 넘기기). */
+.dpg{display:flex;flex-direction:column;min-height:0;margin:0 -16px;position:relative}
+.dpg-head{flex:none;display:flex;align-items:center;gap:4px;height:48px;padding:0 8px;margin-top:8px}
+.dpg-nav{width:48px;height:48px;display:grid;place-items:center;flex:none;border-radius:10px;color:var(--ink)}
+.dpg-nav:active{background:rgba(0,0,0,.08)}
+.dpg-nav:disabled{color:var(--soft);cursor:default;background:none}
+.dpg-title{flex:1;min-width:0;height:44px;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:10px;
+  font-size:17px;font-weight:800;line-height:1.2;letter-spacing:-.2px;color:var(--ink);font-variant-numeric:tabular-nums}
+.dpg-title:active{background:rgba(0,0,0,.08)}
+.dpg-title-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dpg-title .ic{color:var(--ink2);flex:none}
+/* 날짜 입력칸은 보이지 않게(머리 날짜를 누르면 showPicker) */
+.dpg-date{position:absolute;left:50%;top:8px;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}
+.dpg-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+
+.dpg-vp{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;touch-action:pan-y;overscroll-behavior:contain}
+.dpg-track{position:absolute;inset:0;will-change:transform;backface-visibility:hidden}
+.dpg-page{position:absolute;inset:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y;
+  padding:0 16px 16px;contain:layout paint;background:var(--concrete)}
+.dpg-page[hidden]{display:none !important}
+.dpg-page > *{touch-action:pan-y}
+.dragging .dpg-page{-webkit-user-select:none;user-select:none}
+.dpg-err{padding:24px 16px;text-align:center;color:var(--ink2);font-weight:700}
+
+@media (prefers-reduced-motion:reduce){.dpg-track{transition:none !important}}

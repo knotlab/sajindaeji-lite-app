@@ -7,6 +7,7 @@
 //   op 'frame': 셔터 프레임(ImageBitmap 또는 VideoFrame, 넘겨받음 — 메인 스레드 인코딩 0, 2026-10-22 폰 "찍을 때 딜레이") → 조각을 나오는 대로 먼저 보낸다
 //               { id, part:'preview', blob }(사진 줄 칸) → { id, part:'full', blob, w, h }(원본 = incoming·갤러리 원본)
 //               → 마지막 응답 { work, thumb, w, h, tw, th, ms }(작업본은 full canvas 에서 줄인다 — 다시 디코드하지 않는다)
+//   op 'encode': 다 그린 그림(ImageBitmap, 넘겨받음)을 JPEG 로만 → { blob, w, h, ms } — 내보내기·카톡 보내기 굽기(워터마크는 메인에서 그리고 인코딩만 여기서, v0.1.5)
 //   op 'ping' : { ok: true } (OffscreenCanvas 가 없으면 ok:false code:'NO_OFFSCREEN')
 'use strict';
 
@@ -114,6 +115,18 @@ async function frame(m) {
   } finally { try { bmp.close(); } catch { /* 이미 닫힘 */ } }
 }
 
+async function encode(m) {
+  const t0 = performance.now();
+  const bmp = m.bitmap;
+  if (!bmp?.width || !bmp?.height) throw Object.assign(new Error('빈 그림'), { code: 'NO_FRAME' });
+  try {
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    bmp.close();
+    return { blob: await jpeg(c, m.q || 0.85), w: c.width, h: c.height, ms: Math.round(performance.now() - t0) };
+  } finally { try { bmp.close(); } catch { /* 이미 닫힘 */ } }
+}
+
 self.onmessage = async e => {
   const m = e.data || {};
   try {
@@ -126,6 +139,7 @@ self.onmessage = async e => {
     } else if (m.op === 'work') r = await work(m);
     else if (m.op === 'full') r = await full(m);
     else if (m.op === 'frame') r = await frame(m);
+    else if (m.op === 'encode') r = await encode(m);
     else throw new Error(`모르는 작업: ${m.op}`);
     self.postMessage({ id: m.id, ok: true, ...r });
   } catch (err) {

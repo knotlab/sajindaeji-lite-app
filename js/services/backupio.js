@@ -2,6 +2,7 @@
 // ZIP: backup.json + w/<사진ID>.jpg(작업본) + t/<사진ID>.jpg(썸네일). 휴지통 묶음·사진, 설정(키 제외), lastLocation 도 담는다.
 // 판 2(v0.1.4): backup.json 의 drawings = 도면보관함 핀·기준점·도면 메타(작음). 도면 원본 파일·타일은 자료함처럼 백업 밖 —
 //   복원하면 도면은 「원본 파일을 다시 올려 주세요」(missingFile)로 들어오고 핀 이름·묶음 연결·위치 맞춤은 그대로 산다.
+// v0.1.5: backup.json 의 folders = 자료함·도면보관함 폴더와 배치(data/folders.js dumpFolders — 작음). 판 번호는 그대로(2), 칸이 없는 옛 백업도 그대로 읽힌다.
 // 만들기: 흐름 쓰기(앱: CACHE/backup/<이름>.tmp → 크기 확인 → 이름 바꾸기, 웹: Blob 조각) — 사진은 한 장씩만 메모리에.
 // 읽기: File.slice 로 끝의 중앙 디렉터리부터, 항목은 필요할 때 하나씩(core/zip openZip — 원본 backupzip.js read/readEntry) — 수백 MB 도 통째로 올리지 않는다.
 import * as store from '../data/store.js';
@@ -20,6 +21,19 @@ async function drawingsMod() {
   try { const dw = await import('../data/drawings.js'); if (typeof dw.ready === 'function') await dw.ready(); return dw; }
   catch (e) { console.warn('도면보관함을 열지 못했어요', e); return null; }
 }
+// 폴더(별도 DB) — 없거나 못 열면 조용히 빠진다
+async function foldersMod() {
+  try { const fd = await import('../data/folders.js'); await fd.ready(); return fd; }
+  catch (e) { console.warn('폴더를 열지 못했어요', e); return null; }
+}
+// 폴더 덤프 모양 확인 — { v, folders: [], places: [] } 가 아니면 null(없는 것으로)
+export const cleanFoldersDump = d => (d && typeof d === 'object' && Number.isFinite(d.v) && Array.isArray(d.folders) && Array.isArray(d.places) ? d : null);
+// backup.json 글·객체 → parseBackupJson 결과 + folders(core/backup.js 가 모르는 칸이라 여기서 붙인다)
+export function parseWithFolders(input) {
+  let o = input;
+  if (typeof input === 'string') { try { o = JSON.parse(input); } catch { o = input; } }    // JSON 이 아니면 parseBackupJson 이 알맞은 말로 던진다
+  return { ...parseBackupJson(o), folders: cleanFoldersDump(o?.folders) };
+}
 
 // ---- 만들기 ---- → { name, size, blob? | uri?, path?, records, photos, skipped }
 let seq = 0;
@@ -28,11 +42,16 @@ export async function makeBackup(onProgress, { now = Date.now() } = {}) {
   const dw = await drawingsMod();
   let drawings = null;
   try { drawings = dw?.dumpDrawings ? dw.dumpDrawings() : null; } catch (e) { console.warn('도면보관함 백업 실패', e); }
+  const fd = await foldersMod();
+  let folders = null;
+  try { folders = fd ? cleanFoldersDump(fd.dumpFolders()) : null; } catch (e) { console.warn('폴더 백업 실패', e); }
+  if (folders && !folders.folders.length && !folders.places.length) folders = null;
   const snap = store.snapshot();                                             // 휴지통 포함 전부
   const json = makeBackupJson({
     records: snap.records, photos: snap.photos, settings: snap.settings, now, drawings,
     appVersion: APP_VERSION, installId: snap.installId || store.meta('installId', ''), lastLocation: snap.lastLocation,
   });
+  if (folders && !json.folders) { json.folders = folders; json.counts.folders = folders.folders.filter(f => !f.deletedAt).length; }
   const todo = snap.photos.filter(p => p.state === 'ready');
   const name = backupName(now);
   const sink = N.zipSink(`backup/${now}-${++seq}/${name}`);
@@ -76,7 +95,7 @@ const unwrapper = names => {
 };
 const isZip = async file => { const h = new Uint8Array(await file.slice(0, 2).arrayBuffer()); return h[0] === 0x50 && h[1] === 0x4B; };
 
-// file: File|Blob(.zip 또는 backup.json) → { added, updated, skipped, photos, missing?, records, settingsFilled, drawings: { added, updated, skipped, missingFiles } | null }
+// file: File|Blob(.zip 또는 backup.json) → { added, updated, skipped, photos, missing?, records, settingsFilled, drawings: { added, updated, skipped, missingFiles } | null, folders: { added, updated, skipped } | null }
 //   drawings.missingFiles = 원본 파일이 없는 도면 수(도면보관함에서 「원본 파일을 다시 올려 주세요」 — 화면 안내 근거)
 export async function restoreBackup(file, onProgress) {
   if (!file || !(file.size > 0)) throw new Error('빈 파일이에요');
@@ -89,7 +108,7 @@ export async function restoreBackup(file, onProgress) {
     for (const { e, n } of files) { const k = strip(n); if (!named.has(k)) named.set(k, e); }
     const head = named.get('backup.json');
     if (!head) throw new Error('backup.json 이 없는 ZIP 이에요 — 이 앱이 만든 백업 ZIP 이 아니에요');
-    parsed = parseBackupJson(dec.decode(await zip.bytes(head, MAX_JSON)));  // 모양이 틀리면 여기서 던진다 — 아직 아무것도 바꾸지 않았다
+    parsed = parseWithFolders(dec.decode(await zip.bytes(head, MAX_JSON)));  // 모양이 틀리면 여기서 던진다 — 아직 아무것도 바꾸지 않았다
     const map = new Map();
     for (const [n, e] of named) { const m = ENTRY.exec(n); if (m) map.set(`${m[2]}|${m[1] === 'w' ? 'work' : 'thumb'}`, e); }
     const total = parsed.photos.filter(p => p.state === 'ready').length * 2;
@@ -102,7 +121,7 @@ export async function restoreBackup(file, onProgress) {
     };
   } else {
     if (file.size > MAX_JSON) throw new Error('백업 파일이 너무 커요');
-    parsed = parseBackupJson(await file.text());                             // JSON 만 — 사진 파일은 이 기기에 있으면 다시 연결된다
+    parsed = parseWithFolders(await file.text());                             // JSON 만 — 사진 파일은 이 기기에 있으면 다시 연결된다
   }
   const r = await store.merge({ records: parsed.records, photos: parsed.photos }, getBlob);
   // 설정·직전 위치는 이 기기의 값이 비어 있을 때만 채운다(원본 restoreRecords 규칙)
@@ -120,7 +139,13 @@ export async function restoreBackup(file, onProgress) {
       } catch (e) { console.warn('도면보관함 복원 실패', e); drawings = { added: 0, updated: 0, skipped: 0, missingFiles: 0, error: e?.message || String(e) }; }
     }
   }
-  return { ...r, records: parsed.records.length, settingsFilled: Object.keys(patch), drawings };
+  // 폴더·배치는 자료·도면 다음에(배치는 id 만 가리킨다). 지운 폴더 묘비는 되살리지 않는다(mergeFolders)
+  let folders = null;
+  if (parsed.folders) {
+    const fd = await foldersMod();
+    if (fd?.mergeFolders) folders = await fd.mergeFolders(parsed.folders).catch(e => { console.warn('폴더 복원 실패', e); return { added: 0, updated: 0, skipped: 0, error: e?.message || String(e) }; });
+  }
+  return { ...r, records: parsed.records.length, settingsFilled: Object.keys(patch), drawings, folders };
 }
 
 // ---- 재설치 뒤 갤러리 원본으로 사진 되살리기(§4.5-6 다, 원본 restore.js rebuildFromGallery 방식) ----

@@ -4,8 +4,12 @@
 // 도면 파일(PDF·DWG·DXF·그림 — drawings.drawingKind)이면 [⋮] 에 [도면보관함으로 옮기기](docs/도면보관함-설계.md §2): 옮기고 자료함에서는 지운다, 5초 [되돌리기].
 // DWG·DXF 를 자료함에 올리면 처음 한 번만 "도면은 도면보관함에 넣으면 핀·길찾기가 돼요 [옮기기]".
 // docview.js 가 같은 동작을 쓰도록 메뉴·공유·아이콘 도우미를 이름 붙여 내보낸다(라우터는 default 만 쓴다).
+// 폴더(v0.1.5, data/folders.js · widgets/folderbar.js): 바 아래 빵 부스러기 → 폴더 줄 → 자료. 줄을 길게 누르면 여러 개 고르기 → [폴더로 옮기기]·[지우기](5초 되돌리기).
+//   올리기는 지금 폴더로, 찾기는 전체(결과 줄에 폴더 경로), 근처·고정은 맨 위에서만. 휴대폰 뒤로 = 고르기 풀기 → 위 폴더 → 나가기.
 import { h, toast, snackbar, openSheet, textSheet, confirmModal, choose, pickFiles, lockButton } from '../dom.js';
 import * as D from '../../data/docs.js';
+import * as FD from '../../data/folders.js';
+import { folderBar, folderRows, folderMenu, newFolderSheet, newFolderRow, selectHint, pickFolder, selection, whereTag, whereText } from '../widgets/folderbar.js';
 import * as store from '../../data/store.js';
 import * as gps from '../../services/gps.js';
 import * as N from '../../platform/native.js';
@@ -21,6 +25,7 @@ const PATHS = {
   other: ['M6 3h9l4 4v14H6z', 'M14 3v5h5'],
   pin: ['M9 4h6', 'M10 4v6l-3 4h10l-3-4V4', 'M12 14v6'],
   more: ['M12 5h.01', 'M12 12h.01', 'M12 19h.01'],
+  upload: ['M12 16V4', 'M7 9l5-5 5 5', 'M5 20h14'],
   search: ['M10.5 4a6.5 6.5 0 1 1 0 13a6.5 6.5 0 1 1 0-13z', 'M20 20l-4.6-4.6'],
   locate: ['M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z', 'M12 8.5a1.5 1.5 0 1 1 0 3a1.5 1.5 0 1 1 0-3z'],
   back: ['M15 5l-7 7 7 7'],
@@ -40,6 +45,7 @@ const CHIP_KEY = 'lite.docsChip';
 const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* 저장 못 해도 그만 */ } };
 const fmtM = m => (m < 1000 ? `${Math.round(m)}m` : `${(m / 1000).toFixed(1)}km`);
+let backHook = null;                                        // 붙어 있는 자료함 화면의 뒤로(고르기 풀기 → 위 폴더)
 
 // ---- 현재 위치 한 번 얻기(최근 2분 안 값이 있으면 그것, 없으면 GPS 를 잠깐 켜고 10초까지) ----
 export async function fixNow({ maxAge = 120000, wait = 10000 } = {}) {
@@ -102,12 +108,14 @@ export async function moveToDrawings(ids) {
   try { site = store.settings()?.siteName || ''; } catch { /* 설정 없음 */ }
   if (list.length > 1) toast(`옮기는 중… ${list.length}개`, 60000);
   const moved = [];
+  await FD.ready().catch(() => null);                       // 폴더 경로를 도면보관함에도 같게(못 열면 맨 위로)
   for (const d of list) {
     try {
       const blob = await D.docBlob(d.id);
       if (!blob) throw Object.assign(new Error('파일 없음'), { code: 'NO_FILE' });
       const { added, failed } = await M.addDrawingFiles([new File([blob], d.name, { type: d.mime || blob.type || '' })], { site: d.site || site, fromDocId: d.id });
       if (!added?.length) throw Object.assign(new Error(failed?.[0]?.reason || '옮기지 못했어요'), { code: failed?.[0]?.code || 'ERROR' });
+      await followFolder(d.id, added[0].id);
       await D.deleteDoc(d.id);
       moved.push({ docId: d.id, drawingId: added[0].id });
     } catch (err) {
@@ -135,6 +143,20 @@ export async function moveToDrawings(ids) {
   return moved.length;
 }
 
+// 자료함 「101동 › 평면」 안 자료를 옮기면 도면보관함에도 같은 이름 폴더 길을 찾아(없으면 만들어) 그 안에 넣는다. 실패해도 옮기기는 그대로(맨 위)
+async function followFolder(docId, drawingId) {
+  try {
+    const names = FD.path(FD.folderOf('docs', docId)).map(f => f.name);
+    if (!names.length) return;
+    let parent = null;
+    for (const n of names) {
+      const hit = FD.folders('drawings', parent).find(f => f.name === n);
+      parent = hit ? hit.id : (await FD.createFolder('drawings', parent, n)).id;
+    }
+    await FD.placeItems('drawings', [drawingId], parent);
+  } catch (err) { console.warn('도면보관함 폴더를 맞추지 못했다(맨 위에 둠)', err); }
+}
+
 // ---- 지우기(5초 되돌리기) ----
 export async function removeDoc(d) {
   await D.deleteDoc(d.id);
@@ -148,11 +170,12 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
   if (!d) return;
   const options = [
     { value: 'rename', label: '이름 바꾸기' },
-    { value: 'tags', label: '태그 고치기', sub: d.tags || '동·층·공종 같은 말을 적어 두면 찾기 쉬워요' },
+    { value: 'tags', label: '태그 고치기', sub: d.tags || '찾을 때 쓸 말을 적어 둬요' },
     inViewer ? null : { value: 'pin', label: d.pinned ? '고정 풀기' : '맨 위에 고정' },
     d.anchor ? { value: 'unanchor', label: '위치 연결 풀기', sub: '지금은 이 자료에 위치가 연결돼 있어요' }
       : { value: 'anchor', label: '현재 위치 연결', sub: '여기 오면 "지금 위치 근처"에 떠요' },
     nav && !inViewer ? { value: 'capture', label: '촬영할 때 띄우기' } : null,
+    { value: 'folder', label: '폴더로 옮기기', sub: whereText('docs', id) ? `지금: ${whereText('docs', id)}` : '지금: 맨 위' },
     canMoveToDrawings(d) ? { value: 'todrawings', label: '도면보관함으로 옮기기', sub: '도면에 핀을 찍고 길을 찾을 수 있어요' } : null,
     { value: 'share', label: '공유(원본 파일)' },
     { value: 'delete', label: '지우기' },
@@ -164,7 +187,7 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
       const v = await textSheet({ title: '이름 바꾸기', value: d.name, okLabel: '바꾸기' });
       if (v != null && v.trim() && v.trim() !== d.name) { await D.updateDoc(id, { name: v.trim() }); toast('이름을 바꿨어요'); }
     } else if (pick === 'tags') {
-      const v = await textSheet({ title: '태그', value: d.tags || '', placeholder: '예) 101동 5층 평면 타일', okLabel: '저장' });
+      const v = await textSheet({ title: '태그', value: d.tags || '', placeholder: '띄어 쓰면 태그가 나뉘어요', okLabel: '저장' });
       if (v != null) { await D.updateDoc(id, { tags: v }); toast('태그를 저장했어요'); }
     } else if (pick === 'pin') {
       await D.updateDoc(id, { pinned: !d.pinned }); toast(d.pinned ? '고정을 풀었어요' : '맨 위에 고정했어요');
@@ -178,6 +201,12 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
       await D.updateDoc(id, { anchor: null }); toast('위치 연결을 풀었어요');
     } else if (pick === 'capture') {
       nav.go('capture', { docId: id });
+    } else if (pick === 'folder') {
+      await FD.ready();
+      const to = await pickFolder({ scope: 'docs', current: FD.folderOf('docs', id) });
+      if (to == null) return;
+      const r = await FD.placeItems('docs', [id], to);
+      if (r.moved) snackbar('폴더로 옮겼어요', { actionLabel: '되돌리기', onAction: () => r.undo() });
     } else if (pick === 'todrawings') {
       if (await moveToDrawings(id) && inViewer) nav?.back();
     } else if (pick === 'share') {
@@ -193,7 +222,7 @@ export async function docMenu(id, nav, { inViewer = false } = {}) {
 }
 
 // ---- 올리기 ----
-async function upload() {
+async function upload(folderId = null) {
   const files = await pickFiles({ accept: '', multiple: true });
   if (!files.length) return;
   let site = '';
@@ -202,6 +231,7 @@ async function upload() {
     site,
     onProgress: (i, n) => { if (n > 1 && i < n) toast(`올리는 중… ${i + 1}/${n}`, 60000); },
   });
+  if (folderId && added.length) await FD.placeItems('docs', added.map(d => d.id), folderId).catch(err => { console.warn('올린 자료를 폴더에 못 넣었다', err); toast('폴더에 못 넣어 맨 위에 뒀어요'); });
   if (failed.length && !added.length) toast(failed.length === 1 ? `못 올렸어요: ${failed[0].reason}` : `${failed.length}개를 못 올렸어요`, 4000);
   else if (failed.length) toast(`${added.length}개 올렸어요 · ${failed.length}개는 못 올렸어요(${failed[0].reason})`, 4000);
   else toast(added.length === 1 ? '자료를 올렸어요' : `자료 ${added.length}개를 올렸어요`);
@@ -299,64 +329,110 @@ function trashSheet() {
 }
 
 // ---- 줄 ----
-function metaLine(d, extra) {
+function metaLine(d, extra, where) {
   return h('span', { class: 's' },
     h('span', { class: 'dx-mini', text: KIND_LABEL[d.kind] || '파일' }),
     h('span', { text: D.fmtSize(d.size) }),
     ...String(d.tags || '').split(/\s+/).filter(Boolean).slice(0, 3).map(t => h('span', { class: 'dx-mini', text: t })),
     d.anchor ? h('span', { class: 'dx-anch' }, dxIcon('locate', 16), '위치 연결됨') : null,
-    extra || null);
+    extra || null, where || null);
 }
-function docRow(d, nav, { extra, testid = 'doc-row' } = {}) {
-  return h('div', { class: 'dx-row', 'data-testid': testid, 'data-id': d.id },
-    h('button', { type: 'button', class: 'dx-open', onclick: () => nav.go('docview', { id: d.id }) },
-      h('span', { class: ['docico', `k-${d.kind}`] }, dxIcon(d.pinned ? 'pin' : d.kind)),
-      h('span', { class: 'body' }, h('span', { class: 't dx-name', text: d.name }), metaLine(d, extra))),
+// sel 이 있으면 평소 탭 = 열기, 길게 누르기 = 여러 개 고르기(widgets/folderbar.js selection). where = 찾기 결과의 폴더 경로 표지
+function docRow(d, nav, { extra, testid = 'doc-row', sel = null, where = null } = {}) {
+  const openIt = () => nav.go('docview', { id: d.id });
+  const open = h('button', { type: 'button', class: 'dx-open' },
+    h('span', { class: ['docico', `k-${d.kind}`] }, dxIcon(d.pinned ? 'pin' : d.kind)),
+    h('span', { class: 'body' }, h('span', { class: 't dx-name', text: d.name }), metaLine(d, extra, where)));
+  if (sel) sel.bind(open, d.id, { onOpen: openIt }); else open.onclick = openIt;
+  return h('div', { class: 'dx-row', 'data-testid': testid, 'data-id': d.id }, open,
     h('button', { type: 'button', class: 'icbtn dx-menu', 'data-testid': 'doc-menu', 'aria-label': `${d.name} 메뉴`, onclick: () => docMenu(d.id, nav) }, dxIcon('more')));
 }
 
 export default {
+  onBack() { return backHook?.() || false; },
   mount(root, params, nav) {
     dwgMod();
     const page = h('div', { class: 'dx-page' });
     let chip = CHIPS.some(([v]) => v === lsGet(CHIP_KEY)) ? lsGet(CHIP_KEY) : 'all';
     let q = '';
     let lastPos = null;
+    let cur = params.folder || null;                       // 스택 params 에 적어 둔다 — 자료 보기에 다녀와 다시 mount 돼도 그 폴더
+    let fReady = false;
 
-    const upBtn = h('button', { type: 'button', class: 'barlink', 'data-testid': 'docs-upload', text: '올리기' });
-    lockButton(upBtn, upload);
+    const upBtn = h('button', { type: 'button', class: 'barlink', 'data-testid': 'docs-upload', 'aria-label': '자료 올리기' }, dxIcon('upload', 22), '올리기');
+    lockButton(upBtn, () => upload(cur));
     const moreBtn = h('button', { type: 'button', class: 'icbtn', 'data-testid': 'docs-more', 'aria-label': '더 보기', onclick: async () => {
       const n = D.docs({ deleted: true }).length;
       const v = await choose({ title: '자료함', options: [
+        { value: 'newfolder', label: '새 폴더' },
         { value: 'engines', label: '오프라인 준비: 문서 엔진 받기', sub: '신호 없는 곳에서도 PDF·도면이 열리게' },
         { value: 'trash', label: `지운 자료 ${n}개`, sub: '되살리기·영구 삭제' },
       ] });
+      if (v === 'newfolder') { await FD.ready().catch(() => null); newFolderSheet('docs', cur); }
       if (v === 'engines') enginesSheet();
       if (v === 'trash') trashSheet();
     } }, dxIcon('more'));
+    const title = h('h1', { 'data-testid': 'docs-title', text: '자료함' });
     const bar = h('div', { class: 'bar' },
       h('button', { type: 'button', class: 'icbtn', 'aria-label': '뒤로', onclick: () => nav.back() }, dxIcon('back')),
-      h('h1', { text: '자료함' }), upBtn, moreBtn);
+      title, upBtn, moreBtn);
 
-    const input = h('input', { type: 'text', enterkeyhint: 'search', 'data-testid': 'docs-search', placeholder: '이름·태그로 찾기(예: 5층 평면)', 'aria-label': '자료 찾기',
-      autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search' });
+    const input = h('input', { type: 'text', enterkeyhint: 'search', 'data-testid': 'docs-search', placeholder: '이름·태그로 찾기', 'aria-label': '자료 찾기',
+      autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     let qRaf = 0;
     input.addEventListener('input', () => { q = input.value; if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; drawList(); }); });   // 한 그림에 한 번(빠르게 쳐도 목록은 한 번만)
     input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
     const clearQ = h('button', { type: 'button', class: 'icbtn dx-clear', 'aria-label': '지우기', onclick: () => { input.value = ''; q = ''; drawList(); input.focus(); } }, dxIcon('close', 20));
     const search = h('label', { class: 'dx-search' }, dxIcon('search'), input, clearQ);
 
+    // ---- 폴더·여러 개 고르기 ----
+    let shownIds = [];
+    const sel = selection({
+      onMove: async ids => {
+        const to = await pickFolder({ scope: 'docs', current: cur });
+        if (to == null) return;
+        const r = await FD.placeItems('docs', ids, to);
+        sel.clear();
+        snackbar(`${r.moved || ids.length}개를 옮겼어요`, { actionLabel: '되돌리기', onAction: () => r.undo() });
+      },
+      onDelete: async ids => {
+        for (const id of ids) await D.deleteDoc(id);
+        sel.clear();
+        snackbar(`자료 ${ids.length}개를 지웠어요`, { actionLabel: '되돌리기', onAction: async () => { for (const id of ids) await D.restoreDoc(id); } });
+      },
+      onAll: () => sel.set(shownIds),
+      onChange: n => { if (n) hint.done(); },
+    });
+    const fbar = folderBar({ scope: 'docs', folderId: null, onGo: id => goFolder(id) });
+    const frows = folderRows({ scope: 'docs', parentId: null, onOpen: id => goFolder(id), onMenu: id => folderMenu(id, { items: () => D.docs() }), items: () => D.docs() });
+    const newRow = newFolderRow({ scope: 'docs', parent: () => cur });
+    const hint = selectHint('docs');
+    const fwrap = h('div', { class: 'dx-folders' }, frows.el, newRow, hint.el);
+    const setTitle = () => { title.textContent = cur ? (FD.folder(cur)?.name || '자료함') : '자료함'; };
+    function goFolder(id) {
+      cur = FD.resolveFolder(id); params.folder = cur;
+      sel.clear(); fbar.set(cur); frows.set(cur);
+      setTitle();
+      drawNear(); drawList();
+      root.scrollTop = 0;
+    }
+    backHook = () => {
+      if (sel.active()) { sel.clear(); return true; }
+      if (cur) { goFolder(FD.parentOf(cur)); return true; }
+      return false;
+    };
+
     const near = h('div', { class: 'dx-reco', 'data-testid': 'docs-nearby' });
     near.hidden = true;
     const chips = h('div', { class: 'chips dx-chips', role: 'radiogroup', 'aria-label': '종류' },
       ...CHIPS.map(([v, label]) => h('button', { type: 'button', class: 'chip', role: 'radio', 'data-testid': 'docs-chip', 'data-value': v, text: label,
-        onclick: () => { chip = v; lsSet(CHIP_KEY, v); drawList(); } })));
+        onclick: () => { chip = v; lsSet(CHIP_KEY, v); sel.clear(); drawList(); } })));
     const listBox = h('div', { class: 'dx-list' });
-    page.append(bar, search, near, chips, listBox);
-    root.append(page);
+    page.append(bar, fbar.el, search, near, chips, fwrap, listBox);
+    root.append(page, sel.el);                             // 고르기 막대는 화면 맨 끝(아래 고정)
 
     function drawNear() {
-      const items = lastPos ? D.nearby(lastPos, { radius: NEAR_R }).slice(0, NEAR_MAX) : [];
+      const items = lastPos && !cur ? D.nearby(lastPos, { radius: NEAR_R }).slice(0, NEAR_MAX) : [];   // 근처는 맨 위에서만
       near.hidden = !items.length;
       if (!items.length) { near.replaceChildren(); return; }
       near.replaceChildren(h('h3', { text: '지금 위치 근처' }),
@@ -367,30 +443,48 @@ export default {
       for (const b of chips.children) { const on = b.dataset.value === chip; b.classList.toggle('sel', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); }
       clearQ.hidden = !q;
       const all = D.docs();
-      if (!all.length) {
-        chips.hidden = true; search.hidden = true;
+      const nFolders = fReady ? FD.folders('docs', cur).length : 0;
+      if (!all.length && !cur && !nFolders) {
+        chips.hidden = true; search.hidden = true; fwrap.hidden = true; shownIds = [];
         const up2 = h('button', { type: 'button', class: 'primary dx-emptybtn', text: '올리기' });
-        lockButton(up2, upload);
+        lockButton(up2, () => upload(cur));
         listBox.replaceChildren(h('div', { class: 'dx-empty' },
           h('span', { class: 'docico dx-bigico' }, dxIcon('drawing', 32)),
           h('p', { text: '도면·문서 파일을 올려 두면 현장에서 바로 열어 볼 수 있어요' }),
           h('p', { class: 'note', text: 'PDF · 도면(DWG·DXF) · 한글 · 엑셀 · 워드 · 그림' }), up2), trashLink() || '');
         return;
       }
-      chips.hidden = false; search.hidden = false;
+      chips.hidden = !all.length; search.hidden = !all.length;
+      const searching = !!q.trim();
       const kind = chip === 'all' || chip === 'pinned' ? null : chip;
       const found = D.searchDocs(q, { kind, pinned: chip === 'pinned' ? true : null });
+      // 찾기·맨 위의 종류 칩은 전체(줄에 폴더 경로), 폴더 안에서는 그 폴더만
+      const wide = searching || (!cur && chip !== 'all');
+      const base = wide || !fReady ? found : FD.itemsIn('docs', cur, found);
+      fwrap.hidden = searching || chip !== 'all' || !fReady;
+      hint.show(!cur && !nFolders && base.length >= 5 && !FD.allFolders('docs').length);
+      const row = (d, where = wide) => docRow(d, nav, { sel, where: where && fReady ? whereTag('docs', d.id) : null });
       const out = [];
-      if (chip === 'all' && !q.trim()) {
-        const pinned = found.filter(d => d.pinned), rest = found.filter(d => !d.pinned);
-        if (pinned.length) out.push(h('h3', { class: 'sec', text: '고정' }), h('div', { class: 'rows' }, ...pinned.map(d => docRow(d, nav))));
-        out.push(h('h3', { class: 'sec', text: `전체 ${all.length}개` }));
-        if (rest.length) out.push(h('div', { class: 'rows' }, ...rest.map(d => docRow(d, nav))));
-        else out.push(h('p', { class: 'note', text: '모두 고정돼 있어요' }));
+      let shown = [];
+      if (chip === 'all' && !searching) {
+        let rest = base;
+        if (!cur) {
+          const pinned = found.filter(d => d.pinned);                      // 고정은 맨 위에서만 — 어느 폴더에 있든 모아 보인다
+          if (pinned.length) { out.push(h('h3', { class: 'sec', text: '고정' }), h('div', { class: 'rows' }, ...pinned.map(d => row(d, true)))); shown.push(...pinned); }
+          rest = base.filter(d => !d.pinned);
+        }
+        if (rest.length) {
+          out.push(h('h3', { class: 'sec', text: cur ? `자료 ${rest.length}개` : nFolders ? `폴더 밖 자료 ${rest.length}개` : `전체 ${all.length}개` }));
+          out.push(h('div', { class: 'rows' }, ...rest.map(d => row(d, false))));
+          shown.push(...rest);
+        } else if (cur && !nFolders) out.push(h('p', { class: 'note dx-pad', 'data-testid': 'docs-folder-empty', text: '빈 폴더예요. 여기서 올리면 이 폴더에 들어가요' }));
+        else if (!cur && !nFolders && all.length) out.push(h('p', { class: 'note', text: '모두 고정돼 있어요' }));
       } else {
-        out.push(h('h3', { class: 'sec', text: `찾은 자료 ${found.length}개` }));
-        out.push(found.length ? h('div', { class: 'rows' }, ...found.map(d => docRow(d, nav))) : h('p', { class: 'note', text: q.trim() ? '맞는 자료가 없어요. 다른 말로 찾아 보세요' : '이 종류의 자료가 없어요' }));
+        out.push(h('h3', { class: 'sec', text: `찾은 자료 ${base.length}개` }));
+        out.push(base.length ? h('div', { class: 'rows' }, ...base.map(d => row(d))) : h('p', { class: 'note', text: searching ? '맞는 자료가 없어요. 다른 말로 찾아 보세요' : cur ? '이 폴더에는 이 종류의 자료가 없어요' : '이 종류의 자료가 없어요' }));
+        shown = base;
       }
+      shownIds = shown.map(d => d.id);
       out.push(trashLink());
       listBox.replaceChildren(...out.filter(Boolean));
     }
@@ -400,11 +494,21 @@ export default {
     }
     const draw = () => { drawNear(); drawList(); };
 
-    let off = () => {}, offGps = () => {}, stopGps = () => {}, dead = false;
-    D.ready().then(() => {
+    let off = () => {}, offF = () => {}, offGps = () => {}, stopGps = () => {}, dead = false;
+    const fP = FD.ready().then(() => true, err => { console.warn('폴더를 열지 못했어요(폴더 없이 보여요)', err); return false; });
+    Promise.all([D.ready(), fP]).then(([, okF]) => {
       if (dead) return;
+      fReady = okF;
+      if (okF) {
+        cur = FD.resolveFolder(cur); params.folder = cur;
+        fbar.set(cur); frows.set(cur); setTitle();
+        offF = FD.onFolders(ev => {
+          if (ev.folders && cur && FD.resolveFolder(cur) !== cur) return;  // 지금 폴더가 지워졌다 — folderBar 의 onGo 가 위로 데려간다
+          setTitle(); drawList();
+        });
+      } else cur = null;
       draw();
-      off = D.onDocs(draw);
+      off = D.onDocs(() => { draw(); frows.refresh(); sel.retain(D.docs()); });
     }, err => { console.error(err); listBox.replaceChildren(h('p', { class: 'note', text: '자료함을 열지 못했어요. 앱을 다시 열어 주세요' })); });
     try {
       stopGps = gps.start();                                 // 이 화면이 보일 때만
@@ -413,6 +517,11 @@ export default {
       onSnap(gps.snapshot());
     } catch (err) { console.warn('GPS 를 켜지 못했어요', err); }
 
-    return () => { dead = true; off(); offGps(); stopGps(); };
+    return () => {
+      dead = true; off(); offF(); offGps(); stopGps();
+      cancelAnimationFrame(qRaf);
+      fbar.destroy(); frows.destroy(); sel.destroy();
+      backHook = null;
+    };
   },
 };

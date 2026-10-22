@@ -230,6 +230,7 @@ export function purgeDoc(id) {
     await photofs.remove('doc', id, cur.store).catch(e => console.warn('자료 파일을 지우지 못했어요', e));
     await run('readwrite', os => { os.delete(id); });
     cache.delete(id);
+    import('./folders.js').then(F => F.forget('docs', id)).catch(() => {});   // 폴더 배치 기록도(30일 정리·휴지통 비우기 포함). 기다리지 않는다
     changed();
   });
 }

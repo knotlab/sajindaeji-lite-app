@@ -155,6 +155,16 @@
   background:var(--hivis,#FFC400);color:#000;font-size:16px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;touch-action:manipulation}
 .cap-place-ok:active{filter:brightness(.92)}
 .cap[data-placing="1"] .cap-next{background:#fff;border-color:#fff}
+/* 같은 창(설정 captureStage 'shared' — v0.1.6 기본, widgets/sharedstage.js): 셔터 위 줄 오른쪽(엄지)에 바꾸기 단추 [카메라 | 도면] —
+   띄운 것이 있을 때만, 도면·카메라 두 상태에서 같은 자리(사용자 「같은 창에서 바꾸는 단추」). visibility 로만(레이아웃 0). 뷰파인더 위에 두면 워터마크 띠를 가렸다.
+   위치 찍는 중엔 그 자리가 노랑 [여기에 찍기]. 「사진 n장」은 단추 폭만큼 양쪽을 비운 가운데(360 폭에서 겹치지 않게, 처리 중 글은 둘째 줄로) */
+.cap[data-stage][data-shown] .cap-countrow{min-height:48px;margin-bottom:8px}
+.cap-countrow > .ss-toggle{position:absolute;right:0;top:0;visibility:hidden}
+.cap[data-stage][data-shown] .cap-countrow > .ss-toggle{visibility:visible}
+.cap[data-stage][data-shown][data-placing="1"] .cap-countrow > .ss-toggle{visibility:hidden}
+.cap[data-stage][data-shown]:not([data-placing="1"]) .cap-countrow{padding:0 122px}
+.cap[data-stage][data-shown] .cap-count-t{display:flex;flex-wrap:wrap;justify-content:center;column-gap:4px;line-height:18px;text-align:center}
+.cap[data-stage][data-shown] .cap-pending{margin-left:0}
 .cap-ctrl{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px}
 .cap-gallery{justify-self:start;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:56px;min-height:56px;
   padding:4px 8px;border-radius:10px;font-size:13px;font-weight:700;color:#fff}

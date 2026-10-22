@@ -1,8 +1,10 @@
-/* 같은 자리(widgets/sharedstage.js) — 도면 층(아래, 늘 살아 있음) + 카메라 층(위, video + 카메라 문). 상태는 data-mode(drawing|opening|camera|closing).
+/* 같은 창(widgets/sharedstage.js) — 도면 층(아래, 늘 살아 있음) + 카메라 층(위, video + 카메라 문). 상태는 data-mode(drawing|opening|camera|closing).
    움직임은 opacity·transform(+visibility)만 — 레이아웃 없음. 떠오르기 120ms, 닫기: 문 200ms + 120ms 부터 층 흐려지기 140ms(합 260ms).
-   크기 기준(CLAUDE.md): [도면] 칩 44px(아이콘+글자 15px), 셔터 자리 [카메라] 72px(셔터와 같은 자리·크기), 자동 돌아가기 막대 3px. */
+   따뜻한 카메라 열기: 문 상태는 곧바로 open, 문짝은 --ss-warm-hold 뒤에 200ms(층이 거의 떠오른 뒤 — 열리는 움직임이 보이게).
+   띄운 것이 없으면 data-empty — 카메라 층(닫힌 문 + [카메라 열기])이 늘 보인다(v0.1.6 검토).
+   크기 기준(CLAUDE.md): 바꾸기 단추 칸 56×48(아이콘+글자 13px), 셔터 자리 [카메라] 72px(셔터와 같은 자리·크기), 자동 돌아가기 막대 3px. */
 .sstage{
-  --ss-in:120ms; --ss-out:140ms; --ss-out-delay:120ms;
+  --ss-in:120ms; --ss-out:140ms; --ss-out-delay:120ms; --ss-warm-hold:70ms;
   position:absolute;inset:0;overflow:hidden;background:#1A1C1B;
   contain:layout paint style;isolation:isolate;
 }
@@ -34,25 +36,39 @@
   transition:opacity var(--ss-out) ease-in var(--ss-out-delay),visibility 0s calc(var(--ss-out) + var(--ss-out-delay))}
 /* 카메라 문·비율·플래시 버튼처럼 pointer-events 를 스스로 정한 자식도 손을 놓게(부모 값을 덮어써 도면 위에서 탭을 가로채지 않게).
    visibility 는 건드리지 않는다 — 카메라 문이 닫힌 채(visible) 기다려야 따뜻한 카메라에서도 문 열리는 움직임이 보인다(층은 opacity 0 이라 안 보임) */
-.sstage[data-mode="drawing"] .ss-cam *,
-.sstage[data-mode="closing"] .ss-cam *{pointer-events:none !important}
+.sstage:not([data-empty])[data-mode="drawing"] .ss-cam *,
+.sstage:not([data-empty])[data-mode="closing"] .ss-cam *{pointer-events:none !important}
+/* 띄운 것이 없을 때(data-empty — 촬영 화면, v0.1.6 검토): 카메라 층(닫힌 문 + 가운데 [카메라 열기])이 늘 보인다 — 작은 창·v0.1.4 와 같은 첫 화면.
+   도면은 선택이라 사진만 찍는 사람에게 도면 고르기를 먼저 내밀지 않는다(도면은 위 줄 [도면]) */
+.sstage[data-empty] .ss-cam{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--ss-in) ease-out,visibility 0s 0s}
 /* 카메라가 보이는 동안 도면은 손을 받지 않는다(확대·이동 상태는 그대로 — DOM 도 그대로) */
 .sstage[data-mode="opening"] .ss-draw,
 .sstage[data-mode="camera"] .ss-draw{pointer-events:none}
 
-/* [도면] 칩 — 카메라 층 아래 가운데(비율·플래시 버튼이 도는 네 모서리와 겹치지 않게). 문이 열린 뒤에만 */
-.ss-drawbtn{
-  position:absolute;left:50%;bottom:10px;z-index:7;
-  display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px 0 12px;border-radius:22px;
-  background:rgba(0,0,0,.62);color:#fff;border:1px solid rgba(255,255,255,.28);font-size:15px;font-weight:800;line-height:1;
-  transform:translateX(-50%) scale(1);opacity:0;visibility:hidden;touch-action:manipulation;
-  transition:opacity .15s ease-out,visibility 0s .15s;
-}
-.sstage[data-mode="camera"][data-door="open"] .ss-drawbtn{opacity:1;visibility:visible;transition:opacity .15s ease-out .1s,visibility 0s}
-.ss-drawbtn:active{transform:translateX(-50%) scale(.96)}
-.ss-drawbtn .ic{flex:none}
-/* 문 가운데 [카메라 열기]는 쓰지 않는다 — 셔터 자리 [카메라]가 같은 일을 한다(닫히는 중에 다시 떠올라 헷갈리지 않게). 실패 때 [다시 열기]는 그대로 */
-.sstage .camdoor .cd-open{display:none}
+/* 따뜻한 카메라를 닫힌 문에서 열 때(data-door-in="warm") — 문 상태는 곧바로 open 이라 셔터는 바로 찍히고, 문짝만 층이 떠오른 뒤 열린다.
+   예전엔 층이 떠오르는 120ms 동안 문짝이 이미 거의 다 열려 「곧바로 활짝」으로만 보였다(v0.1.6). 닫히는 중에 되돌리면 지금 자리에서 바로(속성 없음) */
+.sstage[data-door-in="warm"] .camdoor[data-state="open"] .cd-leaf{transition-delay:var(--ss-warm-hold)}
+.sstage[data-door-in="warm"] .camdoor[data-state="open"]{transition-delay:calc(var(--cd-open) + var(--ss-warm-hold))}
+/* 문 가운데 [카메라 열기]는 띄운 것이 있을 땐 쓰지 않는다 — 셔터 자리 [카메라]·바꾸기 단추가 같은 일을 한다(닫히는 중에 다시 떠올라 헷갈리지 않게).
+   띄운 것이 없으면(data-empty) 보인다. 실패 때 [다시 열기]는 그대로 */
+.sstage:not([data-empty]) .camdoor .cd-open{display:none}
+
+/* 바꾸기 단추 [카메라 | 도면] — 두 상태에서 같은 자리(촬영 화면: 셔터 위 줄 오른쪽, capture.css 가 자리를 잡는다).
+   고른 칸(지금 보이는 쪽) = 흰 바탕·검정 글자·굵게 + 아이콘 자리에 ✓(색만으로 알리지 않음 — 설정 분할 선택의 ✓ 와 같은 뜻). 노랑은 쓰지 않는다.
+   바꿀 땐 칸 안의 색·visibility 만(레이아웃 0) */
+.ss-toggle{display:inline-grid;grid-template-columns:56px 56px;height:48px;border-radius:12px;box-shadow:inset 0 0 0 1px var(--dark-line,#5A5F5C);
+  background:var(--dark-2,#1E211F);overflow:hidden;-webkit-user-select:none;user-select:none}   /* 테두리는 그림자로 — 칸이 48px 를 다 쓰게 */
+.ss-tg{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:56px;height:100%;padding:0;border:0;border-radius:0;
+  background:transparent;color:var(--dark-ink2,#C9CCC8);font-size:13px;font-weight:700;line-height:1;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.ss-tg[aria-pressed="true"]{background:#fff;color:#000;font-weight:800}
+.ss-tg[aria-pressed="false"]:active{background:#2A2D2B}
+.ss-tg-ic{display:grid;place-items:center;width:22px;height:22px}
+.ss-tg-ic > .ic{grid-area:1/1;width:22px;height:22px}
+/* 아이콘 ↔ ✓ 는 opacity 로 — visibility:visible 을 자식에 주면 단추 전체를 visibility:hidden 으로 숨겨도(위치 찍는 중) ✓ 만 남아 보였다 */
+.ss-tg-ic > .ic + .ic,
+.ss-tg[aria-pressed="true"] .ss-tg-ic > .ic:first-child{opacity:0}
+.ss-tg[aria-pressed="true"] .ss-tg-ic > .ic + .ic{opacity:1;stroke-width:3}
+.ss-tg-lab{white-space:nowrap}
 
 /* 자동 돌아가기 — 아래 가장자리 3px 막대가 줄어든다(transform 만). 재는 중일 때만 */
 .ss-bar{position:absolute;left:0;right:0;bottom:0;height:3px;z-index:8;pointer-events:none;
@@ -79,6 +95,9 @@
 .ss-slot > .ss-backbtn{visibility:hidden;pointer-events:none}
 .ss-slot[data-fail][data-mode="camera"] > .ss-backbtn{visibility:visible;pointer-events:auto}
 .ss-slot[data-fail][data-mode="camera"] > :first-child{visibility:hidden;pointer-events:none}
+/* 띄운 것이 없을 때 실패면 돌아갈 도면이 없다 — 셔터 자리는 셔터(누르면 [다시 열기]와 같은 일, 작은 창과 같게) */
+.ss-slot[data-empty][data-fail][data-mode="camera"] > .ss-backbtn{visibility:hidden;pointer-events:none}
+.ss-slot[data-empty][data-fail][data-mode="camera"] > :first-child{visibility:visible;pointer-events:auto}
 
 /* 움직임 없이 바로 */
 .sstage.ss-instant,.sstage.ss-instant *{transition:none !important}
@@ -86,5 +105,5 @@
   .sstage,.sstage *,.ss-slot,.ss-slot *{transition:none !important}
 }
 /* 시험 페이지(느린 화면 찍기) — sharedStage({ timeScale: 10 }) 와 같이 */
-.ss-slowmo{--ss-in:1200ms;--ss-out:1400ms;--ss-out-delay:1200ms}
+.ss-slowmo{--ss-in:1200ms;--ss-out:1400ms;--ss-out-delay:1200ms;--ss-warm-hold:700ms}
 .ss-slowmo .camdoor{--cd-open:2800ms;--cd-close:2000ms;--cd-half:1800ms}

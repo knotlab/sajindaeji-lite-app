@@ -17,6 +17,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   siteName: '', author: '', wmMode: 'loc+content', wmOnScreen: true, wmDate: true,
   captureMode: 'incam', photoRatio: '4:3', saveToGallery: true, galleryPref: 'sd', vworldKey: '',
   captureHiRes: false,                                                         // 켜면 takePhoto(느림), 끄면 미리보기 프레임 즉시 잡기(§5.4)
+  captureStage: 'shared',                                                      // 'shared' 같은 창(바꾸기 단추, v0.1.6 기본) | 'split' 작은 창(나란히 보기)
+  stageAutoReturn: false,                                                      // 같은 창: 마지막 셔터 4초 뒤 도면으로(v0.1.6 기본 끔)
+  captureStagePicked: false,                                                   // 설정 화면에서 배치를 직접 고름 — 아니면 저장된 captureStage 를 보지 않는다(아래 settings())
+  stageAutoPicked: false,                                                      // 설정 화면에서 자동 돌아가기를 직접 바꿈 — 아니면 저장된 stageAutoReturn 을 보지 않는다
+  wmWhen: 'datetime',                                                          // 촬영 일시: 'datetime' 날짜+시간 | 'date' 날짜만 | 'off' 안 넣기(옛 wmDate 는 읽기 호환용으로 남김)
 });
 const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 글 칸 — 번호·rev·사진 순서·휴지통은 전용 함수 몫
 export { cleanRecordPin };                                                   // 도면 핀 연결 모양 확인(core/backup.js)
@@ -162,7 +167,13 @@ async function commit({ records = [], photos = [], metas = [], delRecords = [], 
 // ---- 설정·메타 ----
 export function settings() {
   const out = { ...DEFAULT_SETTINGS };
-  for (const [k, v] of Object.entries(cache.meta.get('settings') ?? {})) if (v != null) out[k] = v;
+  const saved = cache.meta.get('settings') ?? {};
+  for (const [k, v] of Object.entries(saved)) if (v != null) out[k] = v;
+  if (saved.wmWhen == null && saved.wmDate === false) out.wmWhen = 'off';    // 옛 설정(「촬영 일시 함께 넣기」 끔)을 기본값 'datetime' 이 덮지 않게
+  // 도면·카메라 배치·자동 돌아가기는 사용자가 설정에서 직접 고른 값만 따른다(v0.1.6 — 기본이 'split'·켬 → 'shared'·끔으로 바뀜).
+  // 자동 백업·미러 복원은 settings()(기본값까지 담긴 통째)를 저장하므로 옛 기본값이 「저장된 값」으로 박혀 있을 수 있다
+  if (saved.captureStagePicked !== true) out.captureStage = DEFAULT_SETTINGS.captureStage;
+  if (saved.stageAutoPicked !== true) out.stageAutoReturn = DEFAULT_SETTINGS.stageAutoReturn;
   return Object.freeze(out);
 }
 export function setSettings(patch) {

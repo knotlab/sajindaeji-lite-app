@@ -140,3 +140,15 @@
 .geo-here{min-height:56px}
 
 @media (prefers-reduced-motion:reduce){ .dwv-guide .dwv-arrow,.geo-avg::after{transition:none} }
+/* v0.1.5 도면 보기 [이 도면으로 찍기] — 도면 위 오른쪽 아래(엄지 자리), 보조 버튼(흰 바탕·1px 연한 선). 노랑은 [핀 찍기] 하나 */
+.dwv-cam{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:center;gap:6px;min-height:48px;padding:0 14px 0 12px;
+  border:1px solid var(--soft);border-radius:24px;background:var(--paper);color:var(--ink);font-size:15px;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.16)}
+.dwv-cam:active{background:#F1F2EF}
+.dwv-cam[hidden]{display:none}
+/* [모두 미리 변환] 진행 — 화면 안 한 줄(토스트로 다른 화면을 덮지 않게). 막대는 transform 만 */
+.dw-pre{display:flex;align-items:center;gap:12px;min-height:44px;margin:0 0 8px;padding:0 12px;border-radius:var(--r);background:var(--paper);font-size:14px;font-weight:700;color:var(--ink)}
+.dw-pre[hidden],.dw-sec[hidden]{display:none}
+.dw-pre-bar{flex:1;min-width:0;height:6px;border-radius:3px;background:var(--soft);overflow:hidden}
+.dw-pre-fill{display:block;height:100%;background:var(--ink);transform-origin:0 50%;transform:scaleX(0);transition:transform .18s}
+@media (prefers-reduced-motion:reduce){.dw-pre-fill{transition:none}}
+.dw-pre-t{flex:none}

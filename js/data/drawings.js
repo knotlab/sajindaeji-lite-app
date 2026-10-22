@@ -477,6 +477,7 @@ async function purgeNow(id) {
     for (const pid of pinIds) pinCache.delete(pid);
     changed('drawings', [id]); if (pinIds.length) changed('pins', pinIds);
     unlinkRecords(gonePins);
+    import('./folders.js').then(F => F.forget('drawings', id)).catch(() => {});   // 폴더 배치 기록도(30일 정리 포함). 기다리지 않는다
   }
 }
 // 영구 삭제한 핀에 이어진 묶음의 record.pin 을 푼다(store.purgeRecord 가 핀 연결을 푸는 것과 짝 — 끊어진 참조가 백업에 남지 않게).
