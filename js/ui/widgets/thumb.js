@@ -8,6 +8,7 @@
 // 칸 모양(4:3 가로, object-fit)은 css .thumb 그대로 — 띠는 img 의 object-fit(contain|cover)을 따라 사진 영역 아래에 놓인다.
 import * as store from '../../data/store.js';
 import * as render from '../../media/render.js';
+import { isTyping, onTyping } from '../dom.js';
 
 const live = new Set();                            // 붙어 있는(또는 곧 붙을) .thumb-box
 let unsub = null, io = null, ro = null;
@@ -116,21 +117,36 @@ function ensure() {
   }
   if (!unsub && typeof store.on === 'function') {
     unsub = store.on(ch => {
-      for (const box of [...live]) {
-        if (!box.isConnected) {
-          if (box._seen || Date.now() - box._t > 10000) { live.delete(box); io?.unobserve(box); ro?.unobserve(box._img); }
-          continue;
-        }
-        box._seen = true;
-        const img = box._img;
-        if (ch?.settings) img.dataset.wm = wmOn() ? '1' : '0';
-        if (!box._want) continue;
-        const id = img.dataset.photoId;
-        if (ch?.photos?.has?.(id)) { load(box); continue; }
-        const p = store.photo?.(id);
-        if (ch?.settings || (p && ch?.records?.has?.(p.recordId))) paintWm(box);
-      }
+      // 글 입력 중(시트 뒤 화면)에는 그림을 바꾸지 않는다 — 바뀐 것만 모아 두었다가 입력이 끝나면 한 번에(찍은 직후 글쓰기: 처리 끝·갤러리 원본 알림이 잦다)
+      if (isTyping()) { held = mergeCh(held, ch); if (!offHold) offHold = onTyping(t => { if (t) return; offHold?.(); offHold = null; const c = held; held = null; if (c) apply(c); }); return; }
+      apply(ch);
     });
+  }
+}
+
+let held = null, offHold = null;
+function mergeCh(a, ch) {
+  a = a || { photos: new Set(), records: new Set(), settings: false };
+  for (const id of ch?.photos || []) a.photos.add(id);
+  for (const id of ch?.records || []) a.records.add(id);
+  if (ch?.settings) a.settings = true;
+  return a;
+}
+
+function apply(ch) {
+  for (const box of [...live]) {
+    if (!box.isConnected) {
+      if (box._seen || Date.now() - box._t > 10000) { live.delete(box); io?.unobserve(box); ro?.unobserve(box._img); }
+      continue;
+    }
+    box._seen = true;
+    const img = box._img;
+    if (ch?.settings) img.dataset.wm = wmOn() ? '1' : '0';
+    if (!box._want) continue;
+    const id = img.dataset.photoId;
+    if (ch?.photos?.has?.(id)) { load(box); continue; }
+    const p = store.photo?.(id);
+    if (ch?.settings || (p && ch?.records?.has?.(p.recordId))) paintWm(box);
   }
 }
 

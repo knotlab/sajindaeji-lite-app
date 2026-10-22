@@ -1,0 +1,96 @@
+/* 카메라 문(widgets/camdoor.js) — 뷰파인더(.cap-vf) 위에 겹치는 덮개. 상태는 data-state(closed|opening|open|closing), 실패는 data-fail, 늦음은 data-slow.
+   움직임은 transform·opacity·visibility 만(GPU 합성, 레이아웃 없음). 열기 약 280ms ease-out, 반쯤 열기 180ms(살짝 덜컥), 닫기 200ms.
+   크기 기준(CLAUDE.md): 주 버튼 52px·노랑·검정 2px(이 화면의 주 행동), 보조 48px, 글자 15~17px(최소 13px). */
+.camdoor{
+  --cd-open:280ms; --cd-close:200ms; --cd-half:180ms; --cd-stripe:16px;
+  position:absolute;inset:0;z-index:5;overflow:hidden;
+  container-type:size;contain:layout paint style;
+  visibility:visible;pointer-events:auto;transition:visibility 0s 0s;
+  -webkit-user-select:none;user-select:none;
+}
+/* 열리면 탭을 막지 않고(pointer-events), 다 열린 뒤엔 그리지도 않는다(visibility — 합성할 층이 남지 않게) */
+.camdoor[data-state="open"]{pointer-events:none;visibility:hidden;transition:visibility 0s var(--cd-open)}
+
+/* ---------- 문 두 짝 ---------- */
+.cd-leaf{
+  position:absolute;top:0;bottom:0;width:50%;
+  will-change:transform;backface-visibility:hidden;
+  background:
+    repeating-linear-gradient(180deg,rgba(255,255,255,.035) 0 2px,transparent 2px 28px),
+    linear-gradient(180deg,#3B403D,#2A2E2C);
+  transform:translateX(0);
+  transition:transform var(--cd-close) cubic-bezier(.4,0,.6,1);
+}
+.cd-l{left:0}
+.cd-r{right:0}
+/* 맞닿는 안쪽 가장자리: 하이비스·검정 빗금 띠(컨셉 .start) — 두 짝이 마주 보아 닫히면 ∨ 모양 */
+.cd-leaf::after{content:"";position:absolute;top:0;bottom:0;width:var(--cd-stripe);border:0 solid #000}
+.cd-l::after{right:0;border-left-width:2px;background:repeating-linear-gradient(-45deg,#000 0 8px,var(--hivis,#FFC400) 8px 16px)}
+.cd-r::after{left:0;border-right-width:2px;background:repeating-linear-gradient(45deg,#000 0 8px,var(--hivis,#FFC400) 8px 16px)}
+/* 손잡이(문이라는 단서) */
+.cd-leaf::before{content:"";position:absolute;top:calc(50% - 22px);width:4px;height:44px;border-radius:2px;background:#6E7470}
+.cd-l::before{right:calc(var(--cd-stripe) + 12px)}
+.cd-r::before{left:calc(var(--cd-stripe) + 12px)}
+
+/* 반쯤(약 12%): 짝마다 자기 폭의 24% — 살짝 넘쳤다 돌아오는 '덜컥' */
+.camdoor[data-state="opening"] .cd-leaf{transition:transform var(--cd-half) cubic-bezier(.3,1.6,.55,1)}
+.camdoor[data-state="opening"] .cd-l{transform:translateX(-24%)}
+.camdoor[data-state="opening"] .cd-r{transform:translateX(24%)}
+/* 끝까지: 빗금 띠까지 화면 밖으로 */
+.camdoor[data-state="open"] .cd-leaf{transition:transform var(--cd-open) cubic-bezier(.2,.75,.25,1)}
+.camdoor[data-state="open"] .cd-l{transform:translateX(-102%)}
+.camdoor[data-state="open"] .cd-r{transform:translateX(102%)}
+
+/* ---------- 가운데(버튼·켜는 중·실패) — 셋 다 미리 만들어 두고 opacity 로만 바꾼다 ---------- */
+.cd-mid{position:absolute;inset:0;display:grid;place-items:center;padding:16px;pointer-events:none}
+.cd-mid > *{grid-area:1/1;visibility:hidden;opacity:0;transform:scale(.94);pointer-events:none;
+  transition:opacity .15s ease-out,transform .15s ease-out,visibility 0s .15s}
+.camdoor[data-state="closed"]:not([data-fail]) .cd-open,
+.camdoor[data-state="opening"] .cd-wait,
+.camdoor[data-state="closed"][data-fail] .cd-fail{visibility:visible;opacity:1;transform:scale(1);pointer-events:auto;
+  transition:opacity .15s ease-out,transform .15s ease-out,visibility 0s}
+/* transform 은 none 으로 두지 않는다(none ↔ 값이 바뀌면 쌓임 맥락이 바뀌어 레이아웃이 다시 돈다) — scale(1)·rotate(0) */
+/* 누를 수 있는 건 지금 보이는 묶음뿐 — 사라지는 중(0.15초)인 버튼이 열린 문 위에서 탭을 가로채지 않게 */
+/* 빨리 켜지는 카메라(0.3초 안팎)에선 "켜는 중"이 깜빡이지 않게 조금 늦게 */
+.camdoor[data-state="opening"] .cd-wait{transition-delay:.2s,.2s,0s}
+
+.cd-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 18px;border-radius:12px;
+  font-size:16px;font-weight:800;line-height:1.2;white-space:nowrap;touch-action:manipulation}
+.cd-open,.cd-retry{min-height:52px;padding:0 22px;background:var(--hivis,#FFC400);color:#000;border:2px solid #000;font-size:17px;
+  box-shadow:0 2px 12px rgba(0,0,0,.45)}
+.cd-alt{background:#fff;color:#000;border:1px solid var(--soft,#C3C7C0)}
+.camdoor .cd-mid .cd-btn:active{transform:scale(.97)}
+.cd-btn .ic{flex:none}
+
+.cd-wait{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 16px;border-radius:12px;
+  background:rgba(0,0,0,.74);color:#fff;font-size:15px;font-weight:700;text-align:center;pointer-events:none}
+.cd-spin{transform:rotate(0deg);width:22px;height:22px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:var(--hivis,#FFC400)}
+.camdoor[data-state="opening"] .cd-spin{animation:cd-spin .8s linear infinite}
+@keyframes cd-spin{to{transform:rotate(360deg)}}
+.cd-wait-slow{font-size:13px;font-weight:600;color:var(--dark-ink2,#C9CCC8);opacity:0;transition:opacity .15s}
+.camdoor[data-slow] .cd-wait-slow{opacity:1}
+
+.cd-fail{display:flex;flex-direction:column;align-items:center;gap:12px;max-width:320px;padding:14px 16px;border-radius:12px;
+  background:rgba(0,0,0,.8);text-align:center}
+.cd-fail-msg{color:#fff;font-size:15px;font-weight:700;line-height:1.4}
+.cd-fail-row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+
+/* 작은 창(도면 크게 배치의 카메라 작은 창 등): 빗금 가늘게, 버튼은 아이콘만(48px 정사각) */
+@container (max-width:220px){
+  .cd-leaf{--cd-stripe:8px}
+  .cd-leaf::before{display:none}
+  .cd-mid{padding:4px}
+  .cd-open,.cd-retry{min-height:48px;width:48px;padding:0}
+  .cd-open .cd-lab,.cd-retry .cd-lab{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .cd-wait{padding:6px 8px;font-size:13px}
+  .cd-wait-slow,.cd-alt{display:none}
+  .cd-fail{padding:6px;gap:6px}
+  .cd-fail-msg{font-size:13px}
+}
+
+/* 움직임 없이 바로(close({animate:false})·움직임 줄이기) */
+.camdoor.cd-instant,.camdoor.cd-instant *,.camdoor.cd-instant *::before,.camdoor.cd-instant *::after{transition:none !important}
+@media (prefers-reduced-motion:reduce){
+  .camdoor,.camdoor *{transition:none !important}
+  .camdoor[data-state="opening"] .cd-spin{animation:none}
+}

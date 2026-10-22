@@ -1,17 +1,21 @@
 // 사진·자료 파일 저장소(설계서 §4.5·§5.3·§10.4) — IndexedDB 밖 파일에 둔다(IndexedDB 만 죽는 사고에서 사진이 살아남게).
-//   APK : Capacitor Filesystem DATA/<폴더>/<id>.jpg (화면 표시는 convertFileSrc 주소)
+//   APK : 사진(work·thumb·incoming·original)은 OPFS <폴더>/<id>.jpg(웹뷰가 앱 데이터 폴더에 직접 쓴다 — 브리지 0), 안 되면 IDB.
+//         자료(doc)와 예전 사진(photo.store === 'file')은 Capacitor Filesystem DATA/<폴더>/<id> (화면 표시는 convertFileSrc 주소)
 //   웹  : OPFS <폴더>/<id>.jpg (createWritable 이 되는 브라우저)
 //   폴백: IndexedDB blobs `<id>:<kind>` 에 ArrayBuffer(공시체 방식 — iOS Safari 의 IDB Blob 문제 회피)
 // 종류(kind): work(작업본) · thumb(썸네일) · incoming(처리 전 원본) · original(갤러리에 넣기 전 원본, APK) · doc(자료함 파일, 확장자 없음)
 // 사진 메타의 photo.store 가 그 사진이 어디 있는지 적는다 — 읽을 때 그 값을 주면 바로 거기서, 없으면 차례로 찾는다.
 // 잠깐 머무는 원본(incoming·original)은 APK 에서도 브리지 없이 OPFS(안 되면 IDB)에 쓴다 — 수 MB 를 base64 로 바꿔
 //   브리지로 여러 번 보내던 것이 셔터 뒤 사진이 늦게 뜨던 큰 원인이었다(2026-10-21 현장 "다 느림"). 어디 썼는지는 put 이 돌려주는 store 로 남는다.
+// 작업본·썸네일도 APK 에서 OPFS 로(2026-10-22 폰 "찍은 직후 글이 늦게 쳐짐"): 장당 약 0.5MB 를 base64 로 바꿔 512KB 조각마다 브리지로 넘기고
+//   stat 으로 확인하던 쓰기(메인 스레드 직렬화)가 찍은 직후 글 입력을 밀었다. OPFS 도 IndexedDB 밖 파일이라 「IDB 만 죽는 사고」 대비는 같다.
+//   앱 데이터를 지우거나 재설치하면 DATA 처럼 같이 지워진다 — 그때는 갤러리 원본으로 다시 연결한다(§4.5). 예전에 DATA 에 넣은 사진은 store 'file' 로 그대로 읽는다.
 // APK 의 base64 는 FileReader(비동기, 네이티브)로 만든다 — 메인 스레드의 btoa 를 쓰지 않는다.
 import * as N from '../platform/native.js';
 import { tx } from './db.js';
 
 const DIRS = { work: 'photos', thumb: 'thumbs', incoming: 'incoming', original: 'originals', doc: 'docs' };
-const LOCAL = new Set(['incoming', 'original']);                             // APK 에서도 웹 저장소(OPFS/IDB)에 두는 종류
+const LOCAL = new Set(['incoming', 'original', 'work', 'thumb']);            // APK 에서도 웹 저장소(OPFS/IDB)에 두는 종류(브리지 0)
 const DATA = 'DATA';                                                         // Capacitor Directory.Data
 // 브리지 한 번에 넘기는 조각(원본 files.js 의 512KB). 3 의 배수로 맞춰 base64 조각 중간에 '=' 패딩이 끼지 않게 한다
 const CHUNK = 512 * 1024 - ((512 * 1024) % 3);
@@ -65,7 +69,7 @@ export async function initPhotoFs({ force } = {}) {
   }
   return { kind: await kindP };
 }
-// APK 의 incoming·original 은 OPFS(안드로이드 웹뷰), 안 되면 IDB. 웹은 본 저장소 그대로
+// APK 의 사진(LOCAL)은 OPFS(안드로이드 웹뷰), 안 되면 IDB. 웹은 본 저장소 그대로
 async function localBackend() {
   const k = await backend();
   if (k !== 'file') return k;
@@ -158,9 +162,10 @@ async function idbGet(kind, id) {
 }
 
 const READERS = { file: fileGet, opfs: opfsGet, idb: idbGet };
-const order = async store => {
+const order = async (store, kind) => {
   const k = await backend();
-  const all = k === 'file' ? ['file', 'opfs', 'idb'] : k === 'opfs' ? ['opfs', 'idb'] : ['idb', 'opfs'];
+  // APK 의 사진은 새것이 OPFS — 저장소를 모를 때 브리지(stat)부터 묻지 않게 OPFS·IDB 먼저
+  const all = k === 'file' ? (LOCAL.has(kind) ? ['opfs', 'idb', 'file'] : ['file', 'opfs', 'idb']) : k === 'opfs' ? ['opfs', 'idb'] : ['idb', 'opfs'];
   return store && READERS[store] ? [store, ...all.filter(x => x !== store)] : all;
 };
 
@@ -181,7 +186,7 @@ export async function put(kind, id, bytes) {
 // store 를 주면 거기서 먼저, 없으면 다른 곳도 찾아본다(옛 기록·폴백으로 들어간 파일)
 export async function get(kind, id, store) {
   checkKind(kind);
-  for (const s of await order(store)) {
+  for (const s of await order(store, kind)) {
     const b = await READERS[s](kind, id);
     if (b) return b;
   }
@@ -191,7 +196,7 @@ export async function get(kind, id, store) {
 // 있으면 그 저장소 이름, 없으면 null(복원 때 사진 본체가 살아 있는지 확인)
 export async function has(kind, id, store) {
   checkKind(kind);
-  for (const s of await order(store)) {
+  for (const s of await order(store, kind)) {
     if (s === 'file') { if (await N.fsStat(DATA, nPath(kind, id)).catch(() => null)) return s; continue; }
     if (s === 'opfs') {
       try { await (await opfsDir(kind)).getFileHandle(fileName(kind, id)); return s; } catch { continue; }
@@ -204,7 +209,8 @@ export async function has(kind, id, store) {
 // 화면용 주소. APK 는 convertFileSrc(빠름 — 뿌리 주소를 받아 두었으면 getUri 왕복도 없이), 웹은 새 objectURL(캐시·해제는 store.js 가 한다)
 export async function url(kind, id, store) {
   checkKind(kind);
-  if ((store || (await backend())) === 'file' && (await N.fsStat(DATA, nPath(kind, id)).catch(() => null))) {
+  const k = store || (LOCAL.has(kind) && (await backend()) === 'file' ? null : await backend());
+  if (k === 'file' && (await N.fsStat(DATA, nPath(kind, id)).catch(() => null))) {
     try { return N.fileSrcSync(DATA, nPath(kind, id)); } catch { return N.fileSrc(DATA, nPath(kind, id)); }
   }
   const b = await get(kind, id, store);
@@ -216,7 +222,8 @@ export async function remove(kind, id, store) {
   checkKind(kind); checkId(id);
   const k = await backend();
   const jobs = [tx(['blobs'], 'readwrite', t => { t.objectStore('blobs').delete(blobKey(kind, id)); }).catch(() => {})];
-  if (k === 'file' || store === 'file') jobs.push(N.fsDelete(DATA, nPath(kind, id)).catch(() => {}));
+  // APK 사진(LOCAL)은 저장소를 알면(opfs·idb) 브리지 삭제를 부르지 않는다 — 예전 사진(store 'file')이나 모를 때만
+  if (store === 'file' || (k === 'file' && !(LOCAL.has(kind) && store && store !== 'file'))) jobs.push(N.fsDelete(DATA, nPath(kind, id)).catch(() => {}));
   const opfsToo = k === 'opfs' || store === 'opfs' || (k === 'file' && LOCAL.has(kind) && !!globalThis.navigator?.storage?.getDirectory);
   if (opfsToo) jobs.push(opfsDir(kind).then(d => d.removeEntry(fileName(kind, id))).catch(() => {}));
   await Promise.all(jobs);

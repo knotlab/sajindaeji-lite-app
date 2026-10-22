@@ -78,6 +78,56 @@ export function icon(name, size = 24) {
   return svg;
 }
 
+// ---------- 글 입력 중(체감 속도 — 폰에서 키보드·한글 조합과 다투지 않게) ----------
+// 앱 안 글칸(input 글 종류·textarea·contenteditable)에 포커스가 있거나 글 입력 시트(textSheet)가 떠 있으면 「입력 중」.
+// 끝나면 TYPING_GRACE 뒤에 false — 시트를 닫고 바로 다음 시트를 열거나(위치 → 내용) 키보드가 내려가는 동안 뒤 일을 다시 켜지 않게.
+// 쓰는 쪽: 촬영 화면(카메라·워터마크 미리보기·I/O 멈춤), 화면들의 store 알림 반영(deferWhileTyping), gps 화면 알림·주소 조회(app.js 가 gps.hold 로 잇는다).
+const TYPING_GRACE = 500;
+const TEXT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'tel', 'password', 'number']);
+let typing = false, typingT = 0, textSheets = 0;
+const typingSubs = new Set();
+function editable(el) {
+  if (!el || el === document.body) return false;
+  if (el.isContentEditable) return true;
+  if (el.disabled || el.readOnly) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  return el.tagName === 'INPUT' && TEXT_TYPES.has((el.getAttribute('type') || '').toLowerCase());
+}
+const typingNow = () => textSheets > 0 || (typeof document !== 'undefined' && editable(document.activeElement));
+function setTyping(v) {
+  if (v === typing) return;
+  typing = v;
+  for (const fn of [...typingSubs]) { try { fn(v); } catch (e) { console.error('입력 상태 알림 실패', e); } }
+}
+function recheckTyping() {
+  if (typingNow()) { clearTimeout(typingT); typingT = 0; setTyping(true); return; }
+  if (!typing || typingT) return;
+  typingT = setTimeout(() => { typingT = 0; if (typingNow()) return; setTyping(false); }, TYPING_GRACE);
+}
+export const isTyping = () => typing;
+// fn(true|false) — 바뀔 때만. 해제 함수를 돌려준다
+export function onTyping(fn) { typingSubs.add(fn); return () => { typingSubs.delete(fn); }; }
+// 화면의 store 알림 반영용: 돌려준 schedule() 을 부르면 fn 을 다음 마이크로태스크에 한 번 — 글 입력 중이면 입력이 끝날 때 한 번(여러 번 불러도 한 번).
+// schedule.cancel() 로 걷는다(화면 정리 때)
+export function deferWhileTyping(fn) {
+  let queued = false, off = null;
+  const run = () => { queued = false; fn(); };
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    if (!typing) { queueMicrotask(run); return; }
+    off = onTyping(t => { if (t) return; off?.(); off = null; queueMicrotask(run); });
+  };
+  schedule.cancel = () => { off?.(); off = null; queued = false; };
+  return schedule;
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('focusin', recheckTyping, true);
+  // focusout 중에는 activeElement 가 아직 정해지지 않았다 — 다음 틱에 본다. 포커스된 칸이 통째로 치워지면 focusout 이 안 올 수 있어 화면이 가려질 때도 본다
+  document.addEventListener('focusout', () => setTimeout(recheckTyping, 0), true);
+  document.addEventListener('visibilitychange', recheckTyping);
+}
+
 // ---------- 진행 중 작업 세기(시험이 「손이 끝난 때」를 기다릴 수 있게) ----------
 let inflight = 0;
 export const busy = () => inflight;
@@ -117,16 +167,29 @@ let cur = null, gap = null;
 
 // 시트·대화상자가 떠 있는 동안 뒤 화면(#view)의 높이를 그대로 묶어 둔다 — 키보드가 올라와 창이 줄어도 뒤 화면을 다시 배치하지 않게
 // (촬영 화면은 뷰파인더·워터마크 미리보기를 크기마다 다시 그려, 키보드가 뜨는 동안 글 입력이 늦어졌다). 다 닫히면 푼다
-let frozen = false;
+// 푸는 것은 키보드가 내려간 뒤(UNFREEZE_MS) — 닫자마자 풀면 키보드가 내려가는 동안 창 크기가 바뀔 때마다 뒤 화면을 다시 배치한다.
+// 묶은 높이는 키보드가 뜨기 전 높이(= 키보드가 내려간 뒤 높이)라 늦게 풀어도 보이는 것은 같다
+const UNFREEZE_MS = 450;
+let frozen = false, unfreezeT = 0;
 function freezeView(on) {
   const v = $('#view');
-  if (!v || on === frozen) return;
-  frozen = on;
-  if (on) {
-    const hh = v.getBoundingClientRect().height;
-    if (hh > 0) { v.style.height = `${Math.round(hh)}px`; v.style.flex = 'none'; }
-    v.dataset.frozen = '1';
-  } else { v.style.removeProperty('height'); v.style.removeProperty('flex'); delete v.dataset.frozen; }
+  if (!v) return;
+  if (on) { clearTimeout(unfreezeT); unfreezeT = 0; }
+  if (on === frozen) return;
+  if (!on) {
+    if (unfreezeT) return;
+    unfreezeT = setTimeout(() => {
+      unfreezeT = 0;
+      if (cur || gap || !frozen) return;
+      frozen = false;
+      v.style.removeProperty('height'); v.style.removeProperty('flex'); delete v.dataset.frozen;
+    }, UNFREEZE_MS);
+    return;
+  }
+  frozen = true;
+  const hh = v.getBoundingClientRect().height;
+  if (hh > 0) { v.style.height = `${Math.round(hh)}px`; v.style.flex = 'none'; }
+  v.dataset.frozen = '1';
 }
 export const viewFrozen = () => frozen;
 
@@ -137,7 +200,7 @@ function show(def) {
   if (!host) throw new Error('#layer 가 없어요');
   freezeView(true);
   const back = h('div', { class: ['layer-back', `${def.kind}-back`] });
-  const box = h('div', { class: def.kind, 'data-testid': 'sheet', role: 'dialog', 'aria-modal': 'true' });
+  const box = h('div', { class: [def.kind, def.cls], 'data-testid': 'sheet', role: 'dialog', 'aria-modal': 'true' });
   if (def.label) box.setAttribute('aria-label', def.label);
   back.append(box);
   let done = false;
@@ -189,9 +252,10 @@ export function closeTopSheet() {
 
 // 사용자 정의 시트. build(close) → Node. close() 를 부르면 닫힌다. onClose(reason) 은 어떻게 닫혀도 한 번.
 // modal:true 면 배경을 눌러도 안 닫힌다(뒤로 가기는 닫힘)
-export function openSheet(build, { modal = false, onClose, label } = {}) {
+// cls: 상자에 더할 class(글 입력 시트는 'sheet-text' — 올라오는 움직임 없이 바로, 키보드가 움직임을 대신한다)
+export function openSheet(build, { modal = false, onClose, label, cls = null } = {}) {
   const def = {
-    kind: 'sheet', modal, label, end: onClose,
+    kind: 'sheet', modal, label, cls, end: onClose,
     build(box, layer) {
       box.append(h('div', { class: 'grab', 'aria-hidden': 'true' }));
       const node = build(() => layer.close());
@@ -205,15 +269,25 @@ export function openSheet(build, { modal = false, onClose, label } = {}) {
 // ---- 글 입력 시트 ----
 // 한 줄: Enter = 확인(한글 조합 중이면 무시 — isComposing 과 compositionstart/end 둘 다 본다, 원본 session.js).
 // 여러 줄: Enter = 줄바꿈. 열리자마자 포커스(탭 핸들러 안에서 동기로 — 지연 focus 는 안드로이드에서 키보드가 안 뜬다), 커서는 끝.
-// 배경을 눌러도 안 닫힘, [취소]/[확인]만. 여러 줄 초안은 sessionStorage 에 남긴다(쓰다가 앱이 내려가도). 자동완성·자동고침 끔(기존 선택지처럼 보이지 않게)
+// 배경을 눌러도 안 닫힘, [취소]/[확인]만. 여러 줄 초안은 sessionStorage 에 남긴다(쓰다가 앱이 내려가도) — 글자마다가 아니라 손을 DRAFT_MS 멈추거나 앱이 가려질 때 한 번.
+// 자동완성·맞춤법 검사 끔(기존 선택지처럼 보이지 않게, 맞춤법 검사는 안드로이드에서 단어마다 따로 돈다). 한글 조합은 그대로(키보드 추천도 그대로).
+// select: 'lastNumber' — 열 때 마지막 숫자 덩어리를 골라 둔다(「101동 5층 503호 욕실 벽」의 503 → 바로 쳐서 바꾸기). 숫자가 없으면 커서 끝.
+// [확인]은 곧바로 닫히고 값을 돌려준다 — 저장은 부른 쪽이 뒤에서(화면에 먼저 보이게).
 const DRAFT = 'lite:draft:';
+const DRAFT_MS = 800;
 function draftGet(key) { try { return JSON.parse(sessionStorage.getItem(DRAFT + key) || 'null'); } catch { return null; } }
 function draftSet(key, v) { try { if (v == null) sessionStorage.removeItem(DRAFT + key); else sessionStorage.setItem(DRAFT + key, JSON.stringify(v)); } catch { /* 저장 못 해도 그만 */ } }
+// 마지막 숫자 덩어리 [시작, 끝) — 없으면 null
+export function lastNumberRange(s) {
+  const m = /\d+(?=\D*$)/.exec(String(s ?? ''));
+  return m ? [m.index, m.index + m[0].length] : null;
+}
 
-export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', hint = null, draftKey = null } = {}) {
+export function textSheet({ title, value = '', placeholder = '', multiline = false, okLabel = '확인', hint = null, draftKey = null, select = null } = {}) {
   return new Promise(resolve => {
-    let result = null;
+    let result = null, draftT = 0, flushDraft = null;
     const key = multiline ? (draftKey || title || 'text') : null;
+    textSheets++; recheckTyping();                                                // 줄에 서 있는 동안도 「입력 중」(곧 키보드가 뜬다)
     openSheet(close => {
       let composing = false;
       let start = value ?? '';
@@ -228,7 +302,11 @@ export function textSheet({ title, value = '', placeholder = '', multiline = fal
       field.addEventListener('compositionstart', () => { composing = true; });
       field.addEventListener('compositionend', () => { composing = false; });
       if (!multiline) field.addEventListener('keydown', e => { if (e.key === 'Enter' && !composing && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); ok(); } });
-      if (key) field.addEventListener('input', () => draftSet(key, { base: value ?? '', text: field.value }));
+      if (key) {
+        flushDraft = () => { clearTimeout(draftT); draftT = 0; draftSet(key, { base: value ?? '', text: field.value }); };
+        field.addEventListener('input', () => { clearTimeout(draftT); draftT = setTimeout(flushDraft, DRAFT_MS); });
+        document.addEventListener('visibilitychange', flushDraft);                // 앱이 내려가면 바로 남긴다
+      }
       // 한 줄 칸: 오른쪽 지우기(×) — 이어받은 위치를 통째로 바꿀 때 백스페이스를 여러 번 누르지 않게
       const clear = multiline ? null : h('button', { type: 'button', class: 'sheet-clear', 'aria-label': '지우기', 'data-testid': 'sheet-clear', onpointerdown: e => e.preventDefault(),   // 눌러도 칸이 포커스를 잃지 않게(키보드 유지)
         onclick: () => { field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); field.focus({ preventScroll: true }); } }, icon('close', 20));
@@ -240,23 +318,33 @@ export function textSheet({ title, value = '', placeholder = '', multiline = fal
           h('button', { type: 'button', class: 'secondary', 'data-testid': 'sheet-cancel', text: '취소', onclick: () => { result = null; closeTopSheet(); } }),
           h('button', { type: 'button', class: 'primary', 'data-testid': 'sheet-ok', text: okLabel, onclick: ok })));
       // 상자에 붙은 직후 포커스(같은 탭 작업 안 — 키보드가 뜬다)
-      focusEnd(field);
+      focusEnd(field, select === 'lastNumber' ? lastNumberRange(field.value) : null);
       return body;
     }, {
-      modal: true, label: title,
+      modal: true, label: title, cls: 'sheet-text',
       onClose: reason => {
-        if (key) draftSet(key, null);
+        if (key) { clearTimeout(draftT); document.removeEventListener('visibilitychange', flushDraft); draftSet(key, null); }
+        textSheets = Math.max(0, textSheets - 1); recheckTyping();
         resolve(reason === 'close' ? result : null);
       },
     });
   });
 }
 
-// 노드가 문서에 붙은 뒤 바로(같은 작업 안에서) 포커스하고 커서를 끝에 둔다. 아직 안 붙었으면 다음 틱에 한 번 더
-function focusEnd(field) {
+// 노드가 문서에 붙은 뒤 바로(같은 작업 안에서) 포커스하고 커서를 끝에(range 가 있으면 그 범위를 골라) 둔다
+function focusEnd(field, range = null) {
+  const [a, b] = range || [field.value.length, field.value.length];
+  const v0 = field.value;
   const go = () => {
     field.focus({ preventScroll: true });
-    try { const n = field.value.length; field.setSelectionRange(n, n); } catch { /* 선택 범위 없는 칸 */ }
+    try { field.setSelectionRange(a, b); } catch { /* 선택 범위 없는 칸 */ }
+    // 키보드가 뜰 때 브라우저가 커서를 끝으로 옮겨 놓는 기기가 있다 — 다음 그림에서 아직 손대지 않았으면 범위를 다시 고른다
+    if (range) requestAnimationFrame(() => {
+      if (document.activeElement !== field || field.value !== v0) return;
+      if (field.selectionStart === field.value.length && field.selectionEnd === field.value.length && b !== field.value.length) {
+        try { field.setSelectionRange(a, b); } catch { /* 무시 */ }
+      }
+    });
   };
   queueMicrotask(go);                                                            // build 가 돌려준 노드를 box 에 붙인 직후 — 같은 작업(사용자 탭) 안이다
 }
@@ -369,13 +457,17 @@ export function pickFiles({ accept = 'image/*', capture = null, multiple = false
 // ---------- 키보드 높이(visualViewport) — 시트가 키보드 위에 오게. interactive-widget=resizes-content 가 먹는 곳에서는 0 ----------
 if (typeof window !== 'undefined' && window.visualViewport) {
   const vv = window.visualViewport;
-  let lastKb = -1;
+  let lastKb = -1, kbRaf = 0;
   const upd = () => {
+    kbRaf = 0;
     const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-    if (kb === lastKb) return;                                                   // 루트 변수를 고치면 문서 전체 스타일을 다시 계산한다 — 바뀔 때만
+    if (kb === lastKb) return;
     lastKb = kb;
-    document.documentElement.style.setProperty('--kb', `${kb}px`);
+    // 시트를 담는 #layer 에만 둔다 — 루트(html)에 두면 키보드가 올라오는 동안 프레임마다 문서 전체(뒤의 촬영 화면까지) 스타일을 다시 계산했다
+    const host = document.getElementById('layer') || document.documentElement;
+    host.style.setProperty('--kb', `${kb}px`);
   };
-  vv.addEventListener('resize', upd);
-  vv.addEventListener('scroll', upd);
+  const later = () => { if (!kbRaf) kbRaf = requestAnimationFrame(upd); };     // 한 그림에 한 번
+  vv.addEventListener('resize', later);
+  vv.addEventListener('scroll', later);
 }

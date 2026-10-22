@@ -14,6 +14,7 @@ const DAY = 864e5;
 export const DEFAULT_SETTINGS = Object.freeze({
   siteName: '', author: '', wmMode: 'loc+content', wmOnScreen: true, wmDate: true,
   captureMode: 'incam', photoRatio: '4:3', saveToGallery: true, galleryPref: 'sd', vworldKey: '',
+  captureHiRes: false,                                                         // 켜면 takePhoto(느림), 끄면 미리보기 프레임 즉시 잡기(§5.4)
 });
 const RECORD_EDIT = ['location', 'content'];                                  // updateRecord 로 바꿀 수 있는 칸 — 번호·rev·사진 순서·휴지통은 전용 함수 몫
 const PHOTO_FIXED = ['id', 'recordId', 'state', 'store', 'deletedAt', 'createdAt'];

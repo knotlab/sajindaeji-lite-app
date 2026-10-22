@@ -115,6 +115,7 @@ async function boot() {
   // ① 플랫폼 — 카메라 중에 앱이 죽었다 살아난 결과(appRestoredResult)는 첫 리스너가 붙을 때 온다 → 가장 먼저 받아 둔다
   const native = await imp('../platform/native.js');
   lite.native = native;
+  try { native?.setTypingProbe?.(dom.isTyping); } catch { /* 없음 */ }       // 한가함 판정(whenQuiet)이 시트·글 입력을 알게 — 촬영 화면 밖에서도
   const isNative = (() => { try { return !!native?.isNative?.(); } catch { return false; } })();
   const restoredQ = [];
   let onRestoredReady = null;
@@ -127,6 +128,8 @@ async function boot() {
   } catch (e) { console.warn('뒤로 가기 연결 실패', e); }
 
   const screensP = loadScreens();
+  // 글 입력 중에는 위치 알림·주소 조회를 붙잡는다(키보드·한글 조합과 다투지 않게) — 사진에 붙는 위치 값은 계속 최신
+  imp('../services/gps.js').then(g => { if (typeof g?.hold === 'function' && typeof dom.onTyping === 'function') dom.onTyping(t => g.hold(t)); });
 
   // ② 저장소
   const store = await imp('../data/store.js');
@@ -159,6 +162,8 @@ async function boot() {
   });
   for (const ev of restoredQ.splice(0)) onRestoredReady(ev);
   if (safety?.startSafety) await step('startSafety', () => safety.startSafety());
+  // 글 입력 중에는 미러·백업 파일 쓰기를 미룬다(safety.hold 가 있으면 — 폰에서 파일 쓰기는 브리지를 오가 키보드와 다툰다)
+  if (typeof safety?.hold === 'function') dom.onTyping(t => { try { safety.hold(t); } catch (e) { console.warn('백업 붙잡기 실패', e); } });
 
   // ⑤ 나머지(기다리지 않음)
   step('persist', async () => { if (navigator.storage?.persist && !(await navigator.storage.persisted?.())) await navigator.storage.persist(); });

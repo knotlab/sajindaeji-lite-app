@@ -12,16 +12,19 @@
 //  - screenAspect(ratio, rel) = rel 이 90/270 이면 1/r, 아니면 r — 뷰파인더 상자 = 화면 좌표에서 잘라 낼 상자.
 //  - 프레임 가운데 가장 큰 screenAspect 상자를 잘라 돌리면 세계 기준 r 사진. 뷰파인더도 그 상자 + object-fit:cover 라 보이는 그대로 찍힌다.
 //
-// shoot() 은 한 번에 하나만 돈다(진행 중에 누르면 null). takePhoto 결과는 다시 인코딩하지 않고 {blob 그대로, turns, aspect} 를 넘겨
-// 회전·자르기는 pipeline 이 작업본을 만들 때 한다(셔터 때 12MP 재인코딩으로 미리보기가 멈추지 않게, 설계 비평 7).
-// 프레임 잡기(takePhoto 가 없거나 실패)는 어차피 인코딩하므로 그 자리에서 자르고 돌려 turns=0 으로 돌려준다.
-//
-// 속도(2026-10-21 현장 "다 느림"):
-//  - 미리보기 트랙은 4:3 1280×960 — 12MP 트랙은 미리보기만으로 폰을 무겁게 해 촬영 화면의 글 입력까지 늦췄다.
-//  - 고해상도는 takePhoto 의 photoSettings 로 받는다(getPhotoCapabilities 범위에서 긴 변 약 3264px). 갤러리 원본도 이 크기.
-//  - 셔터 순간 video 프레임을 약 320px 로 그린 미리보기(shot.preview Blob)를 만든다 — pipeline.preview(photoId) 로 사진 줄에 바로 보인다.
-//  - 찍힌 사진의 크기는 JPEG 머리로 읽는다(12MP 를 통째로 디코드하지 않는다).
-import { transformCanvas, canvasToBlob, cropRect, dims, jpegInfoOf, snapshot } from './image.js';
+// 찍기(2026-10-22 폰 "사진을 찍거나 글을 쓸 때 딜레이" — 기본을 「즉시 프레임 잡기」로 바꿈):
+//  - 기본: 미리보기 스트림(4:3 약 1920×1440 ≈ 280만 화소, 안 되면 카메라가 주는 가까운 크기)에서 지금 보이는 프레임을 바로 잡는다
+//    (VideoFrame(video) — 안 되면 createImageBitmap(video) → 워커가 돌리고 잘라 인코딩, image.frameJpegs). 셔터 지연 0·미리보기 멈춤 없음·보이는 그대로(WYSIWYG).
+//    안드로이드 takePhoto 는 정지 사진 모드 전환·초점 때문에 장당 1~3초 걸리고 그동안 미리보기가 멈추며 다음 셔터도 막혔다.
+//  - shoot({ hiRes: true })(설정 captureHiRes)일 때만 takePhoto(긴 변 약 3264px, 느림). takePhoto 가 도는 중에 또 누르면 그 장은 프레임 잡기로(버리지 않는다).
+//  - 셔터 연타: 프레임을 잡는 순간(몇 ms)만 막는다 — 같은 순간의 두 번째 탭만 null. 인코딩은 워커 줄에서 이어진다.
+//    onGrab() 은 프레임을 잡은 즉시, onPreview(blob) 는 약 320px 미리보기가 나오는 즉시(워커) 불린다.
+//  - 결과 blob 은 이미 돌리고 자른 최종 사진(turns=0, aspect=null) = incoming·갤러리 원본. 작업본·썸네일도 같은 워커 호출에서 이어 만들어
+//    shotInfo(blob).prepared 로 넘긴다(pipeline 이 다시 디코드하지 않는다).
+//  - takePhoto 결과는 다시 인코딩하지 않고 {blob 그대로, turns, aspect} 를 넘겨 회전·자르기는 pipeline 이 작업본을 만들 때 한다(설계 비평 7).
+//  - pause(true): 글 입력 시트가 떠 있는 동안 미리보기(트랙 끔 + video 멈춤 — 마지막 그림이 남는다)와 방향 감지를 쉰다(키보드와 GPU·메인 스레드를 다투지 않게).
+//  - 찍힌 사진의 크기는 JPEG 머리로 읽는다(통째로 디코드하지 않는다).
+import { transformCanvas, canvasToBlob, cropRect, dims, jpegInfoOf, snapshot, frameJpegs, frameWorkerReady } from './image.js';
 import * as native from '../platform/native.js';
 
 // ---------- 순수 계산 ----------
@@ -56,7 +59,7 @@ export function nextOrientation(prev, x, y, { G = 9.81, minMag = 0.35, hyst = 10
 }
 
 // ---------- 방향 추적 ----------
-let devO = 0, haveMotion = false, sm = null, listening = false;
+let devO = 0, haveMotion = false, sm = null, listening = false, resting = false;
 const orientFns = new Set();
 const screenAngle = () => (globalThis.screen?.orientation?.angle ?? (typeof globalThis.orientation === 'number' ? globalThis.orientation : 0)) || 0;
 function setDev(o) {
@@ -79,6 +82,7 @@ function onEuler(e) {
 }
 function onScreen() { const rel = orientation(); for (const fn of orientFns) { try { fn(rel); } catch (e) { console.error(e); } } }
 function listen(on) {
+  if (on && resting) return;                                               // 쉬는 동안(글 입력 중)은 켜지 않는다 — pause(false) 가 다시 켠다
   if (on === listening || typeof window === 'undefined') return;
   listening = on;
   const f = on ? 'addEventListener' : 'removeEventListener';
@@ -115,14 +119,18 @@ function codeOf(e) {
 }
 const fail = (code, cause) => Object.assign(new Error({ denied: '카메라 권한이 없어요', nocamera: '카메라를 찾지 못했어요', insecure: '보안 연결(https)에서만 카메라를 쓸 수 있어요', busy: '다른 앱이 카메라를 쓰고 있어요', unknown: '카메라를 열지 못했어요' }[code]), { code, cause });
 
-// 4:3 우선(설계 비평 8: 트랙을 16:9 로 열면 takePhoto 4:3 과 보이는 범위가 달라진다) → zoom 없이 → 아무거나.
-// 미리보기는 1280×960 이면 충분하다(화면 폭 412px × DPR 3 ≈ 1236px). 고해상도는 takePhoto 가 따로 받는다
-const PREVIEW = { width: { ideal: 1280 }, height: { ideal: 960 } };
+// 4:3 우선(설계 비평 8: 트랙을 16:9 로 열면 takePhoto 4:3 과 보이는 범위가 달라진다) → zoom 없이 → 1280×960 → 아무거나.
+// 트랙 = 사진: 기본 촬영이 이 프레임을 그대로 쓰므로 4:3 약 1920×1440(280만 화소 — 대지 작업본 1600px 에 넉넉).
+// 12MP 트랙(4032×3024)은 미리보기만으로 폰을 무겁게 했다(v0.5) — 그 사이 크기다. ideal 이라 카메라가 못 주면 가까운 크기로 열린다
+const PREVIEW = { width: { ideal: 1920 }, height: { ideal: 1440 } };
+const PREVIEW_SMALL = { width: { ideal: 1280 }, height: { ideal: 960 } };
 const ATTEMPTS = [
   { facingMode: { ideal: 'environment' }, aspectRatio: { ideal: 4 / 3 }, ...PREVIEW, zoom: true },
   { facingMode: { ideal: 'environment' }, aspectRatio: { ideal: 4 / 3 }, ...PREVIEW },
+  { facingMode: { ideal: 'environment' }, aspectRatio: { ideal: 4 / 3 }, ...PREVIEW_SMALL },
   { facingMode: { ideal: 'environment' } },
 ];
+export const STREAM_LONG = 1920;
 // takePhoto 해상도 — 긴 변 약 3264px(4:3 이면 3264×2448 ≈ 8MP). 12MP 보다 찍기·처리·갤러리 저장이 빠르고 대지(A4)에는 넘친다
 export const PHOTO_LONG = 3264;
 // getPhotoCapabilities 의 imageWidth/imageHeight 범위 → photoSettings | null(범위를 모르거나 이미 작으면 기본값 = 최대)
@@ -164,6 +172,7 @@ async function start() {
   }
   lastCaps = capsOf(track);
   prepCapture(track);
+  if (resting) applyRest();                                                // 시트가 떠 있는 동안 다시 열렸으면(화면 복귀) 계속 쉰다
   emit('open');
   return lastCaps;
 }
@@ -221,8 +230,29 @@ export async function open(videoEl) {
   catch (e) { const err = e.code ? e : fail(codeOf(e), e); emit('error', err); throw err; }
   finally { opening = null; }
 }
+// ---------- 쉬기(글 입력 시트가 떠 있는 동안) ----------
+// 트랙을 끄고(enabled=false — 카메라 프레임이 웹뷰로 오지 않는다) video 를 멈춘다(마지막 그림이 남아 검게 깜빡이지 않는다). 방향 감지(devicemotion 60Hz)도 끈다.
+// 다시 켜면 곧바로(트랙 다시 켬 → 다음 프레임). 기기를 놓지 않으므로 다시 여는 지연이 없다
+export function pause(on) {
+  on = !!on;
+  if (on === resting) return;
+  resting = on;
+  applyRest();
+}
+export const isPaused = () => resting;
+function applyRest() {
+  const t = stream?.getVideoTracks()[0];
+  if (t) t.enabled = !resting;
+  if (video && stream) {
+    if (resting) { try { video.pause(); } catch { /* 없음 */ } }
+    else video.play()?.catch?.(() => {});
+  }
+  if (resting) listen(false); else if (wanted) listen(true);
+}
+
 export function close() {
   wanted = false;
+  resting = false;
   stopTracks();
   lifecycle(false);
   listen(false);
@@ -244,64 +274,142 @@ export async function setTorch(on) {
 }
 
 // ---------- 찍기 ----------
-const shotInfos = new WeakMap();                      // blob → { turns, aspect } — pipeline.ingest 가 옵션을 안 받아도 찾아 쓴다
+const shotInfos = new WeakMap();                      // blob → { turns, aspect, preview, prepared } — pipeline.ingest 가 옵션을 안 받아도 찾아 쓴다
 export const shotInfo = blob => (blob && shotInfos.get(blob)) || null;
-let shooting = false;
-export const isShooting = () => shooting;
+let grabbing = false, photoBusy = false;
+export const isShooting = () => grabbing || photoBusy;
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('시간 초과')), ms))]);
+const callSafe = (fn, ...a) => { if (fn) { try { fn(...a); } catch (e) { console.error(e); } } };
 
-// → { blob, w, h, turns, aspect, via, preview } | null(진행 중이라 무시). w,h 는 회전·자르기 뒤 최종 크기.
-// turns/aspect 가 0/null 이 아니면 blob 은 아직 돌리지 않은 원본 — pipeline 이 작업본을 만들 때 적용한다
-// preview: 셔터 순간 프레임(약 320px JPEG Blob, 돌리고 자른 최종 모양) | null. onPreview(blob) 를 주면 takePhoto 를 기다리기 전에 바로 부른다.
-//   shotInfo(blob).preview 에도 남아 pipeline.ingest 가 옵션 없이도 찾아 쓴다.
-export async function shoot({ ratio = '4:3', mode = 'auto', onPreview = null } = {}) {
-  if (shooting) return null;
-  if (!stream || !video) throw fail('unknown');
-  shooting = true;
+// 지금 보이는 프레임 → VideoFrame 또는 ImageBitmap(트랙 해상도).
+//   VideoFrame(video): 프레임을 복사하지 않고 감싸기만 한다(메인 스레드 약 0ms) — 워커로 넘겨 거기서 그린다.
+//   createImageBitmap(video) 는 프레임을 메인 스레드에서 복사·변환해 셔터 순간 한 번 멈췄다(4배 늦춤 PC 30~130ms, 폰은 GPU 읽어 오기라 더 클 수 있음).
+//   VideoFrame 은 워커가 있을 때만, 보이는 크기·방향이 video 와 같을 때만(회전·뒤집기 정보가 붙은 프레임은 비트맵으로 — 방향이 어긋나지 않게).
+// 안 되면 ImageCapture.grabFrame, 그것도 안 되면 null(호출자가 video 를 바로 그린다)
+function wrapFrame() {
+  if (typeof globalThis.VideoFrame !== 'function' || !video?.videoWidth || (video.readyState ?? 0) < 2 || !frameWorkerReady()) return null;
+  let f = null;
   try {
-    await new Promise(res => setTimeout(res, 0));        // 한 틱 양보 — 같은 순간의 두 번째 탭은 진행 중으로 보고 버린다(프레임 잡기는 동기라서)
+    f = new VideoFrame(video);
+    if (f.displayWidth === video.videoWidth && f.displayHeight === video.videoHeight && !f.rotation && !f.flip) return f;
+  } catch { /* 이 웹뷰는 안 됨 — 비트맵으로 */ }
+  try { f?.close(); } catch { /* 이미 닫힘 */ }
+  return null;
+}
+async function grabBitmap(track) {
+  const vf = wrapFrame();
+  if (vf) return vf;
+  if (typeof createImageBitmap === 'function' && video?.videoWidth) {
+    try { return await createImageBitmap(video); } catch (e) { console.warn('프레임 잡기(createImageBitmap) 실패', e); }
+  }
+  if (ic && typeof ic.grabFrame === 'function') {
+    try { return await withTimeout(ic.grabFrame(), 1000); } catch (e) { console.warn('grabFrame 실패', e); }
+  } else if (typeof globalThis.ImageCapture === 'function' && track) {
+    try { return await withTimeout(new ImageCapture(track).grabFrame(), 1000); } catch { /* 없음 */ }
+  }
+  return null;
+}
+
+// 프레임 잡기 → { blob, w, h, turns:0, aspect:null, preview, prepared, via:'grab' }
+// onGrabbed(): 프레임을 잡은 즉시(인코딩 전). 잡은 비트맵은 워커로 넘긴다. 비트맵 가로/세로가 화면 프레임(video)과 다르면(센서 방향 그대로) 먼저 90° 돌려 맞춘다
+async function grabShot(rel, r, onPreview, onGrabbed) {
+  const track = stream?.getVideoTracks()[0];
+  const bmp = await grabBitmap(track);
+  if (bmp) callSafe(onGrabbed);
+  const { w: vw, h: vh } = dims(video);
+  const bw = bmp ? (bmp.displayWidth || bmp.width) : 0, bh = bmp ? (bmp.displayHeight || bmp.height) : 0;
+  const pre = bmp && vw && vh && (bw > bh) !== (vw > vh) ? 1 : 0;
+  const turns = (pre + turnsFor(rel)) % 4;
+  const job = bmp ? frameJpegs(bmp, { turns, aspect: r, q: 0.92 }) : null;
+  if (!job && bmp && typeof bmp.displayWidth === 'number') { try { bmp.close(); } catch { /* 이미 닫힘 */ } return mainGrab(video, turnsFor(rel), r, onPreview); }   // VideoFrame 인데 워커가 그새 꺼짐
+  if (job) {
+    job.preview.then(pv => { if (pv) callSafe(onPreview, pv); });
+    try {
+      const f = await job.full;
+      const preview = await job.preview;
+      shotInfos.set(f.blob, { turns: 0, aspect: null, preview, prepared: job.prepared });
+      return { blob: f.blob, w: f.w, h: f.h, turns: 0, aspect: null, preview, prepared: job.prepared, via: 'grab' };
+    } catch (e) { console.warn('워커 프레임 인코딩 실패 — 화면에서 다시 잡아요', e); try { bmp.close?.(); } catch { /* 넘겨져 이미 닫힘 */ } }
+  } else if (bmp) {
+    // 워커 없음 — 잡은 비트맵을 메인 스레드에서(예전 경로: toDataURL)
+    try { return mainGrab(bmp, turns, r, onPreview); } finally { bmp.close?.(); }
+  }
+  if (!stream || !video) throw fail('unknown');
+  try { return mainGrab(video, turnsFor(rel), r, onPreview); } finally { callSafe(onGrabbed); }
+}
+function mainGrab(src, turns, r, onPreview) {
+  let preview = null;
+  try { preview = snapshot(src, { turns, aspect: r }); } catch (e) { console.warn('미리보기 실패', e); }
+  if (preview) callSafe(onPreview, preview);
+  const c = transformCanvas(src, { turns, aspect: r });
+  const blob = canvasToBlob(c, 0.92);
+  shotInfos.set(blob, { turns: 0, aspect: null, preview });
+  return { blob, w: c.width, h: c.height, turns: 0, aspect: null, preview, via: 'grab' };
+}
+
+// takePhoto(고화질, 느림 — 설정 captureHiRes) → { blob(돌리지 않은 원본), w, h, turns, aspect, preview, via:'takePhoto' }
+async function photoShot(rel, r, onPreview) {
+  const track = stream.getVideoTracks()[0];
+  let preview = null;
+  try { preview = snapshot(video, { turns: turnsFor(rel), aspect: r }); } catch (e) { console.warn('미리보기 실패', e); }
+  if (preview) callSafe(onPreview, preview);
+  if (!ic) prepCapture(track);
+  if (!ic) throw new Error('ImageCapture 없음');
+  if (photoOptsP && !photoOpts) await withTimeout(photoOptsP, 300).catch(() => {});
+  const opts = photoOptsBroken ? null : photoOpts;
+  let blob;
+  try { blob = await withTimeout(opts ? ic.takePhoto(opts) : ic.takePhoto(), 5000); }
+  catch (e) {
+    if (!opts) throw e;
+    photoOptsBroken = true; photoOpts = null;                         // 해상도 지정을 못 받는 기기 — 다음부터 기본값
+    console.warn('takePhoto(해상도 지정) 실패 — 기본값으로 다시', e);
+    blob = await withTimeout(ic.takePhoto(), 5000);
+  }
+  let pw, ph;
+  const head = await jpegInfoOf(blob);
+  if (head) { pw = head.w; ph = head.h; }
+  else { const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' }); pw = bmp.width; ph = bmp.height; bmp.close?.(); }
+  const { w: vw, h: vh } = dims(video);
+  // 사진의 가로/세로 방향이 미리보기와 다르면(센서 방향 그대로 나옴) 먼저 90° 돌려 맞춘다(후면 카메라 센서 90° 가 보통)
+  const pre = vw && vh && (pw > ph) !== (vw > vh) ? 1 : 0;
+  const turns = (pre + turnsFor(rel)) % 4;
+  const RW = turns % 2 ? ph : pw, RH = turns % 2 ? pw : ph;
+  const c = cropRect(RW, RH, r);
+  shotInfos.set(blob, { turns, aspect: r, preview });
+  return { blob, w: c.w, h: c.h, turns, aspect: r, preview, via: 'takePhoto' };
+}
+
+// shoot({ ratio, hiRes, mode, onGrab, onPreview }) → { blob, w, h, turns, aspect, via, preview, prepared? } | null(같은 순간 두 번째 탭)
+//   기본은 프레임 잡기(즉시). hiRes(또는 mode:'photo')면 takePhoto — 실패하면 프레임 잡기(mode:'photo' 면 던짐). mode:'grab' 은 늘 프레임 잡기.
+//   w,h 는 회전·자르기 뒤 최종 크기. turns/aspect 가 0/null 이 아니면 blob 은 아직 돌리지 않은 원본 — pipeline 이 작업본을 만들 때 적용한다.
+//   onGrab(): 프레임(또는 takePhoto 요청)을 잡은 즉시 — 이때부터 다음 셔터를 받아도 된다.
+//   onPreview(blob): 약 320px 미리보기(돌리고 자른 최종 모양)가 나오는 즉시. shotInfo(blob).preview 에도 남는다.
+//   prepared: 작업본·썸네일 약속(프레임 잡기+워커) — shotInfo(blob).prepared 로 pipeline 이 찾아 쓴다
+export async function shoot({ ratio = '4:3', mode = 'auto', hiRes = false, onPreview = null, onGrab = null } = {}) {
+  if (grabbing) return null;                              // 같은 순간(프레임을 잡는 몇 ms 안)의 두 번째 탭
+  if (!stream || !video) throw fail('unknown');
+  grabbing = true;
+  let released = false;
+  const release = () => { if (released) return; released = true; grabbing = false; callSafe(onGrab); };
+  try {
+    await new Promise(res => setTimeout(res, 0));        // 한 틱 양보 — 같은 순간의 두 번째 탭은 진행 중으로 보고 버린다
     if (!stream || !video) throw fail('unknown');
+    if (resting) { pause(false); await new Promise(res => setTimeout(res, 120)); }   // 쉬는 중이면(시트) 깨우고 새 프레임을 기다린다
     const rel = orientation(), r = targetRatio(ratio);
-    const track = stream.getVideoTracks()[0];
-    let preview = null;
-    try { preview = snapshot(video, { turns: turnsFor(rel), aspect: r }); } catch (e) { console.warn('미리보기 실패', e); }
-    if (preview && onPreview) { try { onPreview(preview); } catch (e) { console.error(e); } }
-    if (mode !== 'grab' && typeof globalThis.ImageCapture === 'function' && track) {
-      try {
-        if (!ic) prepCapture(track);
-        if (!ic) throw new Error('ImageCapture 없음');
-        if (photoOptsP && !photoOpts) await withTimeout(photoOptsP, 300).catch(() => {});
-        const opts = photoOptsBroken ? null : photoOpts;
-        let blob;
-        try { blob = await withTimeout(opts ? ic.takePhoto(opts) : ic.takePhoto(), 5000); }
-        catch (e) {
-          if (!opts) throw e;
-          photoOptsBroken = true; photoOpts = null;                         // 해상도 지정을 못 받는 기기 — 다음부터 기본값
-          console.warn('takePhoto(해상도 지정) 실패 — 기본값으로 다시', e);
-          blob = await withTimeout(ic.takePhoto(), 5000);
-        }
-        let pw, ph;
-        const head = await jpegInfoOf(blob);
-        if (head) { pw = head.w; ph = head.h; }
-        else { const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' }); pw = bmp.width; ph = bmp.height; bmp.close?.(); }
-        const { w: vw, h: vh } = dims(video);
-        // 사진의 가로/세로 방향이 미리보기와 다르면(센서 방향 그대로 나옴) 먼저 90° 돌려 맞춘다(후면 카메라 센서 90° 가 보통)
-        const pre = vw && vh && (pw > ph) !== (vw > vh) ? 1 : 0;
-        const turns = (pre + turnsFor(rel)) % 4;
-        const RW = turns % 2 ? ph : pw, RH = turns % 2 ? pw : ph;
-        const c = cropRect(RW, RH, r);
-        shotInfos.set(blob, { turns, aspect: r, preview });
-        return { blob, w: c.w, h: c.h, turns, aspect: r, preview, via: 'takePhoto' };
-      } catch (e) {
+    const wantPhoto = mode === 'photo' || (mode !== 'grab' && hiRes);
+    if (wantPhoto && !photoBusy && typeof globalThis.ImageCapture === 'function' && stream.getVideoTracks()[0]) {
+      photoBusy = true;
+      release();                                          // takePhoto 를 기다리는 동안 들어온 셔터는 프레임 잡기로(버리지 않는다)
+      try { return await photoShot(rel, r, onPreview); }
+      catch (e) {
         if (mode === 'photo') throw e;
         console.warn('takePhoto 실패 — 프레임을 잡아요', e);
-      }
+      } finally { photoBusy = false; }
+      if (!stream || !video) throw fail('unknown');
+      return await grabShot(orientation(), r, onPreview, null);
     }
-    // 프레임 잡기: 화면 좌표 프레임 → 돌리고 가운데 자르기(= screenAspect 상자) → q0.92
-    const c = transformCanvas(video, { turns: turnsFor(rel), aspect: r });
-    const blob = canvasToBlob(c, 0.92);
-    shotInfos.set(blob, { turns: 0, aspect: null, preview });
-    return { blob, w: c.width, h: c.height, turns: 0, aspect: null, preview, via: 'grab' };
-  } finally { shooting = false; }
+    if (mode === 'photo') throw new Error('ImageCapture 없음');
+    return await grabShot(rel, r, onPreview, release);    // 비트맵을 잡는 즉시 release — 인코딩(워커)을 기다리지 않고 다음 셔터를 받는다
+  } finally { release(); }
 }

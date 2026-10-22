@@ -55,6 +55,50 @@ export async function toB64(data) {
   return b;
 }
 
+// ---- 한가할 때(브리지로 큰 것을 보내기 전) ----
+// Capacitor 브리지는 넘길 것을 메인 스레드에서 JSON 으로 만들어 통째로 복사한다 — 수 MB(갤러리 원본 base64)면 그동안 글자·셔터가 밀린다
+// (2026-10-22 폰 "찍은 직후 글이 늦게 쳐짐"). 갤러리 원본·미러·자동 백업처럼 급하지 않은 쓰기는 whenQuiet() 뒤로 미룬다.
+//   바쁨 = 최근 quietMs 안에 셔터(markBusy)·글 입력·누름이 있었거나, 글 칸에 포커스가 있음(키보드가 떠 있음) 또는 setTypingProbe 가 참.
+//   maxMs 를 넘기면 포커스는 보지 않고 「1초 동안 입력 없음」만 기다린다(시트를 켜 둔 채 오래 있어도 언젠가는 쓴다).
+let lastBusy = 0, tracking = false, typingProbe = null;
+export function markBusy(t = Date.now()) { if (t > lastBusy) lastBusy = t; }
+// dom.isTyping 같은 판정을 넘긴다(없으면 포커스만 본다)
+export function setTypingProbe(fn) { typingProbe = typeof fn === 'function' ? fn : null; }
+function trackInput() {
+  if (tracking || typeof document === 'undefined') return;
+  tracking = true;
+  const f = () => markBusy();
+  for (const t of ['input', 'keydown', 'compositionupdate', 'pointerdown', 'touchstart']) document.addEventListener(t, f, { capture: true, passive: true });
+}
+function focusTyping() {
+  const a = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!a) return false;
+  if (a.isContentEditable || a.tagName === 'TEXTAREA') return true;
+  return a.tagName === 'INPUT' && /^(text|search|email|tel|url|number|password|)$/i.test(a.type || '');
+}
+export function isQuiet(quietMs = 2000, { strict = true } = {}) {
+  trackInput();
+  if (Date.now() - lastBusy < quietMs) return false;
+  if (!strict) return true;
+  let t = false;
+  try { t = typingProbe ? !!typingProbe() : false; } catch { t = false; }
+  return !t && !focusTyping();
+}
+trackInput();                                                                // 부팅 때부터 입력을 센다(문서가 없으면 아무 일 없음)
+export function whenQuiet({ quietMs = 2000, maxMs = 30000 } = {}) {
+  trackInput();
+  const t0 = Date.now();
+  return new Promise(resolve => {
+    const idle = () => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => resolve(), { timeout: 1000 }) : setTimeout(resolve, 50));
+    const check = () => {
+      const late = Date.now() - t0 > maxMs;
+      if (late ? isQuiet(1000, { strict: false }) : isQuiet(quietMs)) idle();
+      else setTimeout(check, Math.max(200, Math.min(1000, quietMs - (Date.now() - lastBusy))));
+    };
+    check();
+  });
+}
+
 // ---- 파일(Filesystem) — 원본 native.js 이식 ----
 const fs = () => need('Filesystem');
 const parentOf = p => p.split('/').filter(Boolean).slice(0, -1).join('/');

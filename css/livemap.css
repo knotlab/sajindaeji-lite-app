@@ -1,0 +1,54 @@
+/* 실시간 지도(widgets/livemap.js) — 크기는 부모가 정한다(.lm 은 꽉 채움: 부모에 높이를 주거나 flex:1).
+   움직임은 JS 가 transform 만 바꾼다(전환 효과 없음 — 손가락을 바로 따라가게). 타일 <img> 는 app.css 의 img{max-width:100%} 를 풀어야 한다. */
+.lm{position:relative;width:100%;height:100%;min-height:200px;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;
+  background:#E6E8E3;isolation:isolate;contain:layout paint;cursor:grab;-webkit-touch-callout:none}
+.lm:active{cursor:grabbing}
+.lm-tiles{position:absolute;inset:0;pointer-events:none}
+.lm-lv{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0;will-change:transform}
+.lm-src{position:absolute;left:0;top:0}
+/* 0.5px 겹침 — 소수 배율일 때 타일 사이 실금이 비치지 않게 */
+.lm-t{position:absolute;width:256.5px;height:256.5px;max-width:none;max-height:none;visibility:hidden;pointer-events:none;
+  -webkit-user-drag:none;user-select:none;border:0}
+.lm-t.on{visibility:visible}
+.lm-t.bad{visibility:visible}                               /* 못 받은 칸: 회색 그림(JS GRAY), 글 알림은 .lm-note 로 한 번 */
+
+/* 겹침: 마커·내 위치(지도와 같이 돌지 않고 늘 똑바로) */
+.lm-ov{position:absolute;inset:0;pointer-events:none}
+.lm-mks{position:absolute;left:0;top:0}
+.lm-mk{position:absolute;left:0;top:0;width:44px;height:44px;margin:-22px 0 0 -22px;display:grid;place-items:center;
+  pointer-events:auto;cursor:pointer;will-change:transform}
+.lm-mk span{min-width:30px;height:30px;padding:0 6px;border-radius:15px;background:var(--hivis,#FFC400);color:#000;
+  border:2px solid #000;font-size:15px;font-weight:900;line-height:26px;text-align:center;white-space:nowrap;
+  box-shadow:0 1px 3px rgba(0,0,0,.35)}
+.lm-mk[data-kind="muted"] span{background:#fff;border-color:#474C52;color:#000}
+.lm-mk[data-kind="sel"]{z-index:1}
+.lm-mk[data-kind="sel"] span{min-width:36px;height:36px;line-height:31px;border-radius:18px;border-width:3px;font-size:17px}
+
+.lm-me{position:absolute;left:0;top:0;width:0;height:0;z-index:2;will-change:transform}
+.lm-acc{position:absolute;border-radius:50%;background:rgba(21,70,201,.14);border:1px solid rgba(21,70,201,.5)}
+.lm-fan{position:absolute;left:-70px;top:-70px;width:140px;height:140px;transform-origin:70px 70px;overflow:visible}
+.lm-dot{position:absolute;left:-11px;top:-11px;width:22px;height:22px;border-radius:50%;background:var(--info,#1546C9);
+  border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45)}
+
+/* 알림·저작권·나침반 */
+.lm-note{position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:3;max-width:calc(100% - 16px);width:max-content;
+  padding:8px 12px;border-radius:10px;background:rgba(0,0,0,.85);color:#fff;font-size:14px;font-weight:700;line-height:1.35;
+  text-align:center;pointer-events:none}
+.lm-attr{position:absolute;right:4px;bottom:4px;z-index:3;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.82);
+  color:#474C52;font-size:13px;font-weight:600;line-height:1.35;pointer-events:none;white-space:nowrap}
+.lm-compass{position:absolute;right:8px;top:8px;z-index:3;width:44px;height:44px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 4px rgba(0,0,0,.4);display:grid;place-items:center;pointer-events:auto}
+.lm-compass svg{display:block}
+
+/* ---- 「실시간 위치」 화면(screens/livemap.js — 통합 담당이 붙임) ----
+   위: 뒤로 · 제목 · 레이어 고르기(.seg) / 가운데: 지도가 남은 높이를 채움 / 아래: 위치 한 줄(gpsLine) + [내 위치] 주 버튼(노랑, 엄지 영역) */
+.screen.lmv{padding:0;overflow:hidden}
+.lmv > .bar{margin:0;padding-right:8px}
+.lmv-seg{flex:none;padding:2px;gap:2px}
+.lmv-seg > button{flex:none;min-width:48px;min-height:44px;padding:4px 10px;font-size:14px}
+.lmv-host{position:relative;flex:1 1 auto;min-height:0}
+.lmv-host > .lm{position:absolute;inset:0;min-height:0}
+.lmv-dock{display:flex;align-items:center;gap:8px;padding:8px 16px calc(8px + var(--safe-b));background:var(--concrete)}
+.lmv-line{flex:1 1 auto;min-width:0}
+.lmv-fol{flex:none;width:auto;min-height:52px;padding:0 14px;gap:6px;font-size:16px;white-space:nowrap}
+.lmv-fol[data-mode=""]{background:var(--paper)}            /* 따라가지 않을 때는 흰 바탕(노랑은 따라가는 중일 때 — 글로도 표시) */

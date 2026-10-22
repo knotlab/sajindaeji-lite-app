@@ -4,6 +4,9 @@
 // 요청 { id, op, blob, w0?, h0?, turns, aspect, ... } → 응답 { id, ok, ... } | { id, ok:false, error, code }
 //   op 'work' : 작업본(maxSide workMax, q workQ) + 썸네일(thumbMax, thumbQ) → { work: Blob, thumb: Blob, w, h, tw, th, ms }
 //   op 'full' : 풀 해상도 회전·자르기(갤러리 원본, q) → { blob, w, h, ms }
+//   op 'frame': 셔터 프레임(ImageBitmap 또는 VideoFrame, 넘겨받음 — 메인 스레드 인코딩 0, 2026-10-22 폰 "찍을 때 딜레이") → 조각을 나오는 대로 먼저 보낸다
+//               { id, part:'preview', blob }(사진 줄 칸) → { id, part:'full', blob, w, h }(원본 = incoming·갤러리 원본)
+//               → 마지막 응답 { work, thumb, w, h, tw, th, ms }(작업본은 full canvas 에서 줄인다 — 다시 디코드하지 않는다)
 //   op 'ping' : { ok: true } (OffscreenCanvas 가 없으면 ok:false code:'NO_OFFSCREEN')
 'use strict';
 
@@ -91,6 +94,26 @@ async function full(m) {
   } finally { try { d.bmp.close(); } catch { /* 이미 닫힘 */ } }
 }
 
+async function frame(m) {
+  const t0 = performance.now();
+  const bmp = m.bitmap;
+  const W = bmp?.displayWidth || bmp?.width || 0, H = bmp?.displayHeight || bmp?.height || 0;   // ImageBitmap 또는 VideoFrame
+  if (!W || !H) throw Object.assign(new Error('빈 프레임'), { code: 'NO_FRAME' });
+  const turns = m.turns || 0, aspect = m.aspect || null;
+  try {
+    if (m.pvMax > 0) {
+      const pc = draw(bmp, W, H, plan(W, H, turns, aspect, m.pvMax));
+      self.postMessage({ id: m.id, part: 'preview', blob: await jpeg(pc, m.pvQ || 0.7) });
+    }
+    const fc = draw(bmp, W, H, plan(W, H, turns, aspect, Infinity));
+    bmp.close();
+    self.postMessage({ id: m.id, part: 'full', blob: await jpeg(fc, m.q || 0.92), w: fc.width, h: fc.height });
+    const wc = shrink(fc, m.workMax), tc = shrink(wc, m.thumbMax);
+    const [wb, tb] = await Promise.all([jpeg(wc, m.workQ), jpeg(tc, m.thumbQ)]);
+    return { work: wb, thumb: tb, w: wc.width, h: wc.height, tw: tc.width, th: tc.height, ms: Math.round(performance.now() - t0) };
+  } finally { try { bmp.close(); } catch { /* 이미 닫힘 */ } }
+}
+
 self.onmessage = async e => {
   const m = e.data || {};
   try {
@@ -102,6 +125,7 @@ self.onmessage = async e => {
       r = {};
     } else if (m.op === 'work') r = await work(m);
     else if (m.op === 'full') r = await full(m);
+    else if (m.op === 'frame') r = await frame(m);
     else throw new Error(`모르는 작업: ${m.op}`);
     self.postMessage({ id: m.id, ok: true, ...r });
   } catch (err) {

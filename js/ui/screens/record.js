@@ -166,7 +166,8 @@ export default {
       grid.hidden = !photos.length;
       empty.hidden = !!photos.length;
     }
-    const schedule = () => { if (!queued) { queued = true; queueMicrotask(render); } };
+    // store 알림 반영은 글 입력이 끝난 뒤 한 번(내용 시트를 쓰는 동안 사진 처리 알림마다 격자를 다시 맞추지 않게). [확인] 직후 글은 edit() 가 바로 그린다
+    const schedule = typeof dom.deferWhileTyping === 'function' ? dom.deferWhileTyping(render) : () => { if (!queued) { queued = true; queueMicrotask(render); } };
 
     const off = store.on(ch => {
       if (dead || deleting) return;
@@ -177,6 +178,6 @@ export default {
     });
     render();
 
-    return () => { dead = true; off?.(); dock.remove(); };
+    return () => { dead = true; schedule.cancel?.(); off?.(); dock.remove(); };
   }
 };

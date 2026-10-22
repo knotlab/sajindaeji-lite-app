@@ -275,7 +275,8 @@ export default {
 
     const input = h('input', { type: 'text', enterkeyhint: 'search', 'data-testid': 'docs-search', placeholder: '이름·태그로 찾기(예: 5층 평면)', 'aria-label': '자료 찾기',
       autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', enterkeyhint: 'search' });
-    input.addEventListener('input', () => { q = input.value; drawList(); });
+    let qRaf = 0;
+    input.addEventListener('input', () => { q = input.value; if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; drawList(); }); });   // 한 그림에 한 번(빠르게 쳐도 목록은 한 번만)
     input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
     const clearQ = h('button', { type: 'button', class: 'icbtn dx-clear', 'aria-label': '지우기', onclick: () => { input.value = ''; q = ''; drawList(); input.focus(); } }, dxIcon('close', 20));
     const search = h('label', { class: 'dx-search' }, dxIcon('search'), input, clearQ);

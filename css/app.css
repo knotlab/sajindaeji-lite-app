@@ -202,6 +202,8 @@ input::placeholder,textarea::placeholder{color:#6E7378}
 .modal-back{align-items:center;justify-content:center;padding:24px 16px}
 .sheet{display:flex;flex-direction:column;width:100%;max-width:440px;max-height:88%;padding:4px 16px calc(16px + var(--safe-b));
   border-radius:16px 16px 0 0;background:var(--paper);color:var(--ink);box-shadow:0 -4px 24px rgba(0,0,0,.18);animation:sheet-up var(--dur) ease-out;outline:none}
+/* 글 입력 시트는 올라오는 움직임 없이 바로 — 키보드가 올라오는 움직임과 겹쳐 첫 글자 무렵 프레임을 먹지 않게 */
+.sheet.sheet-text{animation:none}
 .grab{flex:none;width:36px;height:4px;border-radius:2px;background:var(--soft);margin:6px auto 12px}
 .sheet-body{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto;overscroll-behavior:contain}
 .sheet h2,.sheet-title{font-size:18px;font-weight:800;line-height:1.3}

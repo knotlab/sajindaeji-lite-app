@@ -16,10 +16,24 @@ let lastReq = null, inflight = false;
 let geoSource = null;                                                        // 시험용 가짜 geolocation({ watchPosition, clearWatch })
 let lifeHooked = false;
 
+// 붙잡기(hold): 글 입력 중에는 구독자(화면의 위치 줄·근처 도면)를 깨우지 않고 주소(VWorld)도 묻지 않는다 — 키보드·한글 조합과 다투지 않게.
+// 값(snap)은 늘 최신이라 사진에 붙는 위치(fixForPhoto)는 그대로. 풀면 밀린 알림 한 번·주소 확인 한 번
+let held = false, heldDirty = false, heldGeo = false;
+const notify = () => { for (const fn of [...subs]) { try { fn(snap); } catch (e) { console.error(e); } } };
 const emit = patch => {
   snap = Object.freeze({ ...snap, ...patch });
-  for (const fn of [...subs]) { try { fn(snap); } catch (e) { console.error(e); } }
+  if (held) { heldDirty = true; return; }
+  notify();
 };
+export function hold(on) {
+  on = !!on;
+  if (on === held) return;
+  held = on;
+  if (on) return;
+  if (heldDirty) { heldDirty = false; notify(); }
+  if (heldGeo) { heldGeo = false; if (snap.pos && running) maybeGeocode(snap.pos); }
+}
+export const isHeld = () => held;
 export function snapshot() { return snap; }
 export function on(fn) { subs.add(fn); return () => subs.delete(fn); }
 
@@ -115,6 +129,7 @@ function onErr(err) {
 }
 
 async function maybeGeocode(pos, force = false) {
+  if (held) { heldGeo = true; return; }                                        // 입력이 끝나면 hold(false) 가 다시 부른다
   if (!vworld.key()) { if (snap.addrState !== 'nokey') emit({ addrState: 'nokey', addr: null, addrError: null }); return; }
   if (inflight) return;
   const now = Date.now();
@@ -134,6 +149,6 @@ async function maybeGeocode(pos, force = false) {
 // ---- 시험용 ----
 export function _setSource(geo) { geoSource = geo || null; }
 export function _reset() {
-  end(null); refs = 0; paused = false; lastReq = null; inflight = false; lastPosEmit = 0;
+  end(null); refs = 0; paused = false; lastReq = null; inflight = false; lastPosEmit = 0; held = false; heldDirty = false; heldGeo = false;
   snap = Object.freeze({ state: 'off', pos: null, addr: null, addrState: 'idle', addrError: null });
 }

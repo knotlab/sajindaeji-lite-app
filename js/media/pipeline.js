@@ -9,6 +9,8 @@
 // 처리는 한 번에 하나씩(줄), 촬영은 막지 않는다. 회전·자르기 정보(xform)는 photo.xform 에 남겨 recover 때도 같은 그림이 나온다.
 // 즉시 미리보기: ingest 에 preview(셔터 순간 320px Blob, camera.shoot 의 shot.preview — 없으면 shotInfo 에서 찾음)를 주면
 //   처리하는 동안 preview(photoId) 가 그 주소를 돌려준다(썸네일이 「처리 중」 대신 사진을 보인다). 처리가 끝나고 잠시 뒤 해제.
+// 프레임 잡기 셔터(camera.shoot 기본, 2026-10-22): 워커가 원본과 함께 작업본·썸네일도 만들어 둔다(prepared) — ②에서 다시 디코드하지 않고 그것을 쓴다.
+// 갤러리 원본(브리지로 수 MB base64)은 한가할 때만(native.whenQuiet — 최근 2초 안에 셔터·글 입력이 없고 글 칸이 비활성) 넣는다.
 import * as store from '../data/store.js';
 import * as native from '../platform/native.js';
 import { uid } from '../core/model.js';
@@ -51,7 +53,7 @@ function dropPreviewLater(id) { if (previews.has(id)) setTimeout(() => dropPrevi
 // ---- 처리 줄 ----
 let lane = Promise.resolve();
 const queued = new Set();                 // 줄에 서 있거나 처리 중인 사진 — 사진마다 한 번만
-const mem = new Map();                    // id → { raw, xform, original, tempPath } (방금 들어온 것 — incoming 을 다시 읽지 않게)
+const mem = new Map();                    // id → { raw, xform, original, tempPath, prepared } (방금 들어온 것 — incoming 을 다시 읽지 않게)
 const pendFns = new Set();
 let active = 0;                           // 디스크 저장 중 + 줄
 const idleWaiters = [];
@@ -110,7 +112,9 @@ async function processPhoto(id) {
     const xform = m.xform || p.xform || null;
     // 갤러리 원본용 사본 — 작업본을 만드는 동안(워커) 같이 쓴다. incoming 은 ready 저장 때 지워지므로 그 전에 끝나 있어야 한다
     const keepOrig = wantsOriginal(p) ? fsMod().then(fs => fs.put('original', id, raw)).then(() => true, e => { console.warn('갤러리 원본 사본을 못 썼어요 — 바로 넣어요', e); return false; }) : null;
-    const r = await makeWorkAndThumbFast(raw, hasXform(xform) ? xform : {});
+    let r = null;
+    if (m.prepared && !hasXform(xform)) r = await m.prepared.catch(e => { console.warn('미리 만든 작업본을 못 받았어요 — 다시 만들어요', e); return null; });
+    if (!r) r = await makeWorkAndThumbFast(raw, hasXform(xform) ? xform : {});
     const kept = keepOrig ? await keepOrig : false;
     const done = await store.finishPhoto(id, { work: r.work.blob, thumb: r.thumb.blob, w: r.work.w, h: r.work.h, ...patch });
     timings.push({ id, via: r.via, workerMs: r.ms, totalMs: Math.round(performance.now() - t0), bytes: raw.length });
@@ -157,6 +161,7 @@ function kickOriginals() {
 async function runOriginals() {
   while (origQ.length) {
     while (queued.size && origQ.length < 4) await lane.catch(() => {});
+    await native.whenQuiet({ quietMs: 2000, maxMs: origQ.length >= 4 ? 8000 : 30000 });   // 브리지 직렬화가 글자·셔터를 막지 않게(밀리면 덜 기다림)
     const id = origQ.shift();
     try { await saveKeptOriginal(id); } catch (e) { console.warn('갤러리 원본 저장 실패', id, e); } finally { origSet.delete(id); }
   }
@@ -233,7 +238,8 @@ export async function revive(id, raw, { uri = null } = {}) {
 //   원본이 디스크에 안전하게 들어간 뒤 돌아온다(처리는 줄에서 이어짐 — 끝은 store.on 으로 ready/failed 가 알린다).
 //   { wait: true } 면 처리까지 기다려 최종 Photo 를 돌려준다.
 //   preview: 셔터 순간 그림(Blob | 주소) — 처리하는 동안 preview(photoId) 로 보인다. 없으면 camera.shotInfo(blob).preview
-export async function ingest(recordId, blob, { source = 'incam', takenAt, takenAtSource, gps = null, turns, aspect, id, original = null, tempPath = null, preview: pv = null, wait = false, now = Date.now() } = {}) {
+//   prepared: 작업본·썸네일 약속(camera 프레임 잡기 — 없으면 shotInfo(blob).prepared). 회전·자르기가 없는 원본일 때만 쓴다
+export async function ingest(recordId, blob, { source = 'incam', takenAt, takenAtSource, gps = null, turns, aspect, id, original = null, tempPath = null, preview: pv = null, prepared = null, wait = false, now = Date.now() } = {}) {
   bump(1);
   let photo;
   const pid = id || uid('p');
@@ -245,7 +251,7 @@ export async function ingest(recordId, blob, { source = 'incam', takenAt, takenA
     const raw = blob instanceof Uint8Array ? blob : new Uint8Array(await blob.arrayBuffer());
     const orig = original ? { name: original.name ?? null, savedTo: original.savedTo ?? null, uri: original.uri ?? null, at: now } : null;
     photo = await store.addIncoming(recordId, { id: pid, raw, takenAt: takenAt ?? now, takenAtSource: takenAtSource || (source === 'incam' ? 'camera' : 'file'), source, gps, xform, tempPath, original: orig, now });
-    mem.set(pid, { raw, xform, original, tempPath });
+    mem.set(pid, { raw, xform, original, tempPath, prepared: prepared || shot?.prepared || null });
     const p = enqueue(pid);
     if (wait) { await p; return store.photo(pid); }
     return photo;

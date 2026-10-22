@@ -2,6 +2,7 @@
 // 무거운 처리(작업본·썸네일·갤러리 원본)는 Web Worker(imgworker.js, OffscreenCanvas.convertToBlob)에서 — 메인 스레드는 기다리기만 한다
 //   (2026-10-21 현장 "다 느림": 12MP 디코드·toDataURL 이 메인 스레드를 0.5초 넘게 막아 글 입력·화면이 끊겼다).
 //   워커·OffscreenCanvas 가 없거나 실패하면 예전 경로(메인 스레드 toDataURL)로.
+//   셔터 프레임(frameJpegs, 2026-10-22)도 워커에서 — 메인 스레드는 ImageBitmap 을 넘기기만 한다(인코딩 0).
 // 메인 스레드에서는 toBlob 을 쓰지 않는다: 갤럭시 A55 웹뷰에서 장당 약 4초, toDataURL 은 약 0.1초(공시체 util.js 실측 — 되돌리지 말 것)
 // 워터마크 그리기는 옮기지 않았다 — core/watermark.js 가 맡는다
 import { IMG } from '../config.js';
@@ -171,6 +172,7 @@ function wkGet() {
   wk.onmessage = e => {
     const d = e.data || {}, c = wkCalls.get(d.id);
     if (!c) return;
+    if (d.part) { try { c.onPart?.(d); } catch (err) { console.error(err); } return; }   // 중간 조각(frame 의 미리보기·원본) — 끝 응답은 아직
     wkCalls.delete(d.id); clearTimeout(c.t);
     if (d.ok) { wkFails = 0; c.res(d); }
     else {
@@ -186,13 +188,15 @@ function wkGet() {
   };
   return wk;
 }
-function wkCall(msg, ms = 60000) {
+// transfer: 넘길 것(ImageBitmap 등 — 복사 없이 옮긴다), onPart(d): 끝 응답 전에 오는 조각
+function wkCall(msg, ms = 60000, { transfer = [], onPart = null } = {}) {
   return new Promise((res, rej) => {
     const w = wkGet(), id = ++wkSeq;
     clearTimeout(wkIdle); wkIdle = null;
     const t = setTimeout(() => { wkFails++; wkKill(Object.assign(new Error('워커 시간 초과'), { code: 'WORKER_TIMEOUT' })); }, ms);
-    wkCalls.set(id, { res, rej, t });
-    w.postMessage({ ...msg, id });
+    wkCalls.set(id, { res, rej, t, onPart });
+    try { w.postMessage({ ...msg, id }, transfer); }
+    catch (e) { wkCalls.delete(id); clearTimeout(t); rej(Object.assign(e instanceof Error ? e : new Error(String(e)), { code: 'WORKER_POST' })); }   // 넘길 수 없는 것(오래된 웹뷰의 VideoFrame 등) — 워커는 그대로
   });
 }
 const asBlob = input => (input instanceof Blob ? input : new Blob([input instanceof ArrayBuffer ? new Uint8Array(input) : input], { type: 'image/jpeg' }));
@@ -231,6 +235,29 @@ export async function transformFull(input, { turns = 0, aspect = null } = {}, q 
   }
   const img = await decode(input);
   try { return canvasToBlob(transformCanvas(img, { turns, aspect }), q); } finally { img.close?.(); }
+}
+
+// 셔터 프레임(ImageBitmap — 워커로 넘어가 닫힌다) → 워커가 미리보기 → 원본(q) → 작업본·썸네일을 차례로(메인 스레드 인코딩 0).
+// → { preview: Promise<Blob|null>, full: Promise<{ blob, w, h }>, prepared: Promise<{ work:{blob,w,h}, thumb:{blob,w,h}, via:'worker', ms }> }
+//   full 은 원본이 나오는 즉시(작업본을 기다리지 않음 — 「찍은 즉시 디스크」), prepared 는 pipeline 이 다시 디코드하지 않고 쓴다.
+// 워커를 못 쓰면 null(호출자가 메인 스레드 경로로). 워커가 도중에 실패하면 full 이 거부된다(프레임은 이미 넘어갔다 — 호출자가 다시 잡는다)
+export const frameWorkerReady = () => forced !== 'main' && workerUsable();   // camera 가 VideoFrame(워커 전용)을 잡아도 되나
+// bitmap: ImageBitmap 또는 VideoFrame(넘겨받아 워커가 닫는다)
+export function frameJpegs(bitmap, { turns = 0, aspect = null, q = 0.92, pvMax = 320, pvQ = 0.7 } = {}) {
+  if (forced === 'main' || !workerUsable() || !bitmap) return null;
+  let pvRes, fullRes, fullRej;
+  const preview = new Promise(r => { pvRes = r; });
+  const full = new Promise((r, j) => { fullRes = r; fullRej = j; });
+  const t0 = performance.now();
+  const done = wkCall({ op: 'frame', bitmap, turns, aspect, q, pvMax, pvQ, workMax: IMG.workMax, workQ: IMG.workQ, thumbMax: IMG.thumbMax, thumbQ: IMG.thumbQ }, 60000, {
+    transfer: [bitmap],
+    onPart: d => { if (d.part === 'preview') pvRes(d.blob || null); else if (d.part === 'full') fullRes({ blob: d.blob, w: d.w, h: d.h }); },
+  });
+  done.then(() => { pvRes(null); fullRej(new Error('원본 조각이 오지 않았어요')); }, e => { pvRes(null); fullRej(e); });   // 이미 받았으면 아무 일 없음
+  const prepared = done.then(r => ({ work: { blob: r.work, w: r.w, h: r.h }, thumb: { blob: r.thumb, w: r.tw, h: r.th }, via: 'worker', ms: Math.round(performance.now() - t0) }));
+  prepared.catch(() => {});                                                // 안 쓰고 버려도 처리 안 된 거부가 되지 않게
+  full.catch(() => {});
+  return { preview, full, prepared };
 }
 
 // 셔터 순간 미리보기 — video(또는 그림)를 돌리고 잘라 긴 변 maxSide 로 작게 그린 JPEG Blob(약 320px, 몇 ms)

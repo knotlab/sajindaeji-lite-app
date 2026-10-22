@@ -1,0 +1,86 @@
+/* 핀 지도(widgets/pinmap.js) — 도면 스냅샷 위 번호 핀. 그림은 transform 만(GPU 합성), 핀 층은 따로.
+   크기 기준(CLAUDE.md): 핀 30px(지금 묶음 38px) — 화면 확대와 상관없이 일정, 번호 13~16px 굵게. 단추 44px 정사각, 주 행동 [여기에 찍기] 52px 노랑·검정 2px(이 덮개의 주 행동 하나).
+   지금 묶음은 크기·흰 테두리로, 흐린 핀은 옅은 노랑 + 회색 테두리로(색만으로 나누지 않는다 — 크기·번호 함께). */
+.pinmap{
+  --pm-pin:30px; --pm-pin-on:38px;
+  position:relative;display:flex;flex-direction:column;min-height:0;min-width:0;
+  background:#F4F5F2;color:var(--ink,#000);
+  -webkit-user-select:none;user-select:none;
+}
+.pm-stage{
+  position:relative;flex:1 1 auto;min-height:0;overflow:hidden;
+  background:#F4F5F2;touch-action:none;outline-offset:-3px;
+  contain:strict;
+}
+.pm-static .pm-stage{touch-action:auto;cursor:default}
+.pm-img{
+  position:absolute;left:0;top:0;max-width:none;max-height:none;
+  transform-origin:0 0;will-change:transform;backface-visibility:hidden;
+  pointer-events:none;-webkit-user-drag:none;user-select:none;
+  visibility:hidden;
+}
+.pinmap[data-ready="1"] .pm-img{visibility:visible}
+.pm-msg{position:absolute;inset:0;display:grid;place-items:center;padding:16px;text-align:center;font-size:15px;font-weight:700;color:var(--ink2,#474C52)}
+
+/* ---------- 핀 ---------- */
+.pm-pins{position:absolute;inset:0;pointer-events:none;will-change:transform;contain:layout style}
+.pm-pin{
+  position:absolute;left:0;top:0;width:0;height:0;padding:0;border:0;background:none;
+  pointer-events:none;--ox:0px;--oy:0px;
+}
+.pinmap[data-tap="1"] .pm-pin,
+.pinmap[data-mode="place"] .pm-pin.is-on{pointer-events:auto;cursor:pointer}
+.pinmap[data-mode="place"] .pm-pin.is-on{cursor:grab}
+.pm-badge{
+  position:absolute;left:0;top:0;width:var(--pm-pin);height:var(--pm-pin);
+  transform:translate(calc(-50% + var(--ox)),calc(-50% + var(--oy)));
+  display:grid;place-items:center;border-radius:50%;
+  background:var(--hivis,#FFC400);border:2px solid #000;color:#000;
+  font:800 13px/1 var(--font,system-ui,sans-serif);letter-spacing:-.3px;font-variant-numeric:tabular-nums;
+  box-shadow:0 1px 3px rgba(0,0,0,.45);white-space:nowrap;
+}
+/* 손가락 닿는 자리 44px(보이는 원은 30px) */
+.pm-badge::after{content:"";position:absolute;inset:-7px;border-radius:50%}
+.pm-pin.is-on .pm-badge{
+  width:var(--pm-pin-on);height:var(--pm-pin-on);border-width:3px;font-size:16px;
+  box-shadow:0 0 0 2px #fff,0 2px 6px rgba(0,0,0,.5);
+}
+.pm-pin.is-on{z-index:2}
+.pm-pin.is-drag .pm-badge{box-shadow:0 0 0 2px #fff,0 6px 14px rgba(0,0,0,.55)}
+.pm-pin.is-dim .pm-badge{background:#FFE69A;border-color:#474C52;box-shadow:none}
+/* 겹쳐서 비켜 놓았으면 제자리에 점 */
+.pm-dot{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;background:#000;box-shadow:0 0 0 1.5px #fff;display:none}
+.pm-pin.is-off .pm-dot{display:block}
+
+/* ---------- 조준 십자(place) — 어떤 바탕에서도 보이게 검정 선 + 흰 테 ---------- */
+.pm-cross{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none;z-index:3}
+.pm-cross i{position:absolute;background:#000;box-shadow:0 0 0 1.5px #fff}
+.pm-cross i:first-child{left:-22px;top:-1px;width:44px;height:2px;
+  -webkit-mask:linear-gradient(90deg,#000 0 15px,transparent 15px 29px,#000 29px);mask:linear-gradient(90deg,#000 0 15px,transparent 15px 29px,#000 29px)}
+.pm-cross i:nth-child(2){left:-1px;top:-22px;width:2px;height:44px;
+  -webkit-mask:linear-gradient(180deg,#000 0 15px,transparent 15px 29px,#000 29px);mask:linear-gradient(180deg,#000 0 15px,transparent 15px 29px,#000 29px)}
+.pm-cross b{position:absolute;left:-2px;top:-2px;width:4px;height:4px;border-radius:50%;background:var(--fail,#C4122F);box-shadow:0 0 0 1.5px #fff}
+
+/* ---------- 확대·축소 단추 ---------- */
+.pm-zoom{position:absolute;right:8px;bottom:8px;z-index:4;display:flex;flex-direction:column;gap:8px}
+.pm-zbtn{
+  width:44px;height:44px;display:grid;place-items:center;border-radius:10px;
+  background:rgba(255,255,255,.94);border:1px solid var(--soft,#C3C7C0);color:#000;
+  box-shadow:0 1px 3px rgba(0,0,0,.2);
+}
+.pm-zbtn:disabled{opacity:.4}
+.pm-zbtn:active{background:#E4E6E1}
+
+/* ---------- 아래 줄(place) ---------- */
+.pm-bar{
+  flex:none;display:flex;align-items:center;gap:8px;
+  padding:8px 16px calc(8px + var(--safe-b,0px));background:#fff;border-top:1px solid var(--soft,#C3C7C0);
+}
+.pm-hint{flex:1 1 auto;min-width:0;font-size:14px;font-weight:600;line-height:1.35;color:var(--ink2,#474C52)}
+.pm-place{
+  flex:none;min-height:52px;padding:0 16px;display:inline-flex;align-items:center;gap:8px;
+  border-radius:12px;background:var(--hivis,#FFC400);border:2px solid #000;color:#000;
+  font-size:16px;font-weight:800;white-space:nowrap;
+}
+.pm-place:active{background:#E6B000}
+@media (max-width:359px){.pm-place{padding:0 12px}.pm-hint{font-size:13px}}

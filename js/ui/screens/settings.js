@@ -270,6 +270,8 @@ export default {
       { value: '4:3', label: '가로 4:3', sub: '기본' }, { value: '16:9', label: '가로 16:9', sub: '칸에 꽉 차요' }, { value: '3:4', label: '세로 3:4' },
     ], () => S().photoRatio, v => save({ photoRatio: v }));
     const galleryTg = toggle('set-gallery', '원본을 휴대폰 갤러리에도 저장', '앱을 지워도 갤러리에 남아요', () => S().saveToGallery, v => save({ saveToGallery: v }));
+    // 고화질 원본: 켜면 앱 안 카메라가 정지 사진(takePhoto, 긴 변 약 3264px)으로 찍는다 — 안드로이드는 장당 1~3초 걸려 기본은 끔(미리보기 프레임으로 바로 찍기)
+    const hiresTg = toggle('set-hires', '고화질 원본(느림)', '켜면 사진이 1~3초 늦게 찍혀요', () => S().captureHiRes === true, v => save({ captureHiRes: v }));
     const prefSeg = seg('set-gallery-pref', [{ value: 'sd', label: 'SD카드' }, { value: 'phone', label: '휴대폰' }], () => S().galleryPref, v => save({ galleryPref: v }));
     const sdNote = h('p', { class: 'st-hint', 'data-role': 'sd-note' });
     const failLine = h('div', { class: 'st-inline', 'data-role': 'gallery-failed', hidden: true });
@@ -492,6 +494,7 @@ export default {
       section('촬영',
         h('p', { class: 'st-label st-cap', text: '촬영 방식' }), capSeg.el,
         h('p', { class: 'st-label st-cap', text: '사진 비율' }), ratioSeg.el,
+        h('div', { class: 'st-list st-gap' }, hiresTg.el),
         isNat ? h('div', { class: 'st-list st-gap' }, galleryTg.el,
           h('div', { class: 'st-sub-block' }, h('p', { class: 'st-label st-cap', text: '원본 저장 위치' }), prefSeg.el, sdNote), failLine) : null),
       section('위치(GPS)', h('div', { class: 'st-keyrow' }, keyField.el, vTest), keyState, vResult),
@@ -508,7 +511,7 @@ export default {
       if (dead) return;
       site.paint(); author.paint(); keyField.paint();
       wmSeg.paint(); wmScreen.paint(); wmDate.paint(); paintWm();
-      capSeg.paint(); ratioSeg.paint(); galleryTg.paint(); prefSeg.paint();
+      capSeg.paint(); ratioSeg.paint(); hiresTg.paint(); galleryTg.paint(); prefSeg.paint();
       if (isNat) paintGallery();
       paintV(); paintTrash(); paintFlow();
       repaintPreview();
@@ -518,10 +521,14 @@ export default {
     paintInfo();
     if (params?.focus === 'backup') requestAnimationFrame(() => nowBtn.scrollIntoView({ block: 'center' }));
 
-    let raf = 0;
+    // store 알림 → 다음 그림에 한 번. 글칸을 쓰는 중이면(입력 중) 칸을 떠난 뒤 한 번 — 쓰는 동안 화면·미리보기·저장 공간 계산을 돌리지 않는다
+    let raf = 0, photosChanged = false;
+    const repaint = () => { if (dead || raf) return; raf = requestAnimationFrame(() => { raf = 0; paintAll(); if (photosChanged) { photosChanged = false; paintInfo(); } }); };
+    const later = typeof dom.deferWhileTyping === 'function' ? dom.deferWhileTyping(repaint) : repaint;
     const off = store.on?.(ch => {
-      if (dead || raf) return;
-      raf = requestAnimationFrame(() => { raf = 0; paintAll(); if (ch?.photos?.size) paintInfo(); });
+      if (dead) return;
+      if (ch?.photos?.size) photosChanged = true;
+      later();
     });
 
     return () => {
@@ -529,6 +536,7 @@ export default {
       site.flush(); author.flush(); keyField.flush();
       if (live === paintFlow) live = null;
       if (raf) cancelAnimationFrame(raf);
+      later.cancel?.();
       off?.();
     };
   },

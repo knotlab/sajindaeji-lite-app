@@ -157,7 +157,8 @@ export default {
       startSub.textContent = last ? `이어서: ${last}` : '위치는 찍으면서 적어요';
       renderDocs();
     }
-    const schedule = () => { if (!queued) { queued = true; queueMicrotask(render); } };
+    // store 알림 반영은 글 입력이 끝난 뒤 한 번(시트 뒤 목록을 쓰는 동안 다시 그리지 않게)
+    const schedule = typeof dom.deferWhileTyping === 'function' ? dom.deferWhileTyping(render) : () => { if (!queued) { queued = true; queueMicrotask(render); } };
 
     const off = store.on(ch => {
       if (ch?.records?.size || ch?.photos?.size || ch?.settings || ch?.meta?.has?.('lastLocation') || ch?.meta?.has?.('lastBackupAt')) schedule();
@@ -175,6 +176,7 @@ export default {
 
     return () => {
       dead = true;
+      schedule.cancel?.();
       clearInterval(tick);
       off?.(); offDocs?.();
       try { line.destroy?.(); } catch { /* 무시 */ }

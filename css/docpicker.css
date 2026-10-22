@@ -1,0 +1,61 @@
+/* 자료 고르기 시트(widgets/docpicker.js) — 촬영 화면의 [자료]·도면 칩 [바꾸기]. 토큰·.sheet·.primary 는 app.css.
+   시트 높이는 화면의 약 75%로 고정(걸러도 시트가 출렁이지 않게), 목록만 스크롤. 줄 60px, 글자 16/14px.
+   움직임은 app.css 의 sheet-up(transform) 하나뿐 — 줄·구역에는 움직임을 넣지 않는다(치는 대로 바로 바뀌게). */
+
+.sheet.dp-sheet{height:min(75dvh,calc(100% - 16px));max-height:none;padding-bottom:calc(8px + var(--safe-b))}
+.dp-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px}
+
+/* 머리: 제목 · [올리기] · [닫기] */
+.dp-head{flex:none;display:flex;align-items:center;gap:4px;margin-top:-4px}
+.dp-title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dp-up{display:inline-flex;align-items:center;gap:4px;min-height:44px;padding:0 12px;border-radius:10px;font-size:15px;font-weight:800;color:var(--ink)}
+.dp-up:active{background:#F1F2EF}
+.dp-up:disabled{opacity:.5}
+.dp-x{width:44px;height:44px;display:grid;place-items:center;border-radius:10px;color:var(--ink2);margin-right:-8px}
+.dp-x:active{background:#F1F2EF}
+
+/* 검색칸(입력 글자 16px — 안드로이드 확대 방지) */
+.dp-search{flex:none;display:flex;align-items:center;gap:4px;min-height:48px;padding:0 0 0 12px;background:var(--paper);border:1px solid var(--soft);border-radius:12px;color:var(--ink2)}
+.dp-search:focus-within{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.dp-q{flex:1;min-width:0;height:46px;border:0;outline:0;background:none;font:inherit;font-size:16px;color:var(--ink)}
+.dp-q::placeholder{color:#6B7076}
+.dp-clear{width:44px;height:44px;display:grid;place-items:center;color:var(--ink2);border-radius:10px;flex:none}
+.dp-status{flex:none;font-size:14px;font-weight:700;color:var(--ink2);line-height:1.4}
+
+/* 목록 — 여기만 스크롤. 바깥 .sheet-body 는 쓰지 않는다(머리·검색칸이 같이 밀려 올라가지 않게) */
+.dp-list{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;margin:0 -16px;padding:0 16px 8px;contain:content}
+.dp-group+.dp-group{margin-top:4px}
+.dp-sec{position:sticky;top:0;z-index:1;margin:0;padding:10px 0 6px;font-size:14px;font-weight:800;color:var(--ink2);background:var(--paper)}
+.dp-rows{display:flex;flex-direction:column}
+
+.dp-row{display:flex;align-items:center;gap:12px;width:100%;min-height:60px;padding:8px 8px 8px 4px;border-top:1px solid #E6E8E4;border-radius:0;text-align:left;color:var(--ink)}
+.dp-rows>.dp-row:first-child{border-top:0}
+.dp-row:active{background:#F1F2EF}
+/* 지금 띄운 자료 = 선택된 것: 검정 2px + 「보는 중」 글자(색만으로 나타내지 않는다) */
+.dp-row.cur{border-radius:10px;box-shadow:inset 0 0 0 2px var(--ink);border-top-color:transparent}
+.dp-row.cur+.dp-row{border-top-color:transparent}
+.dp-ico{width:40px;height:40px;flex:none;display:grid;place-items:center;border-radius:10px;background:var(--concrete);color:var(--ink)}
+.dp-ico.k-pdf{color:var(--fail)}
+.dp-ico.k-sheet{color:var(--pass)}
+.dp-ico.k-drawing{color:var(--info)}
+.dp-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.dp-name{font-size:16px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dp-sub{display:flex;align-items:center;gap:6px;min-width:0;font-size:14px;line-height:1.3;color:var(--ink2);white-space:nowrap;overflow:hidden}
+.dp-kind{flex:none;display:inline-flex;align-items:center;height:22px;padding:0 6px;border:1px solid var(--soft);border-radius:5px;font-size:13px;font-weight:800;color:var(--ink2);letter-spacing:.2px}
+.dp-size{flex:none;font-variant-numeric:tabular-nums}
+.dp-dist{flex:none;font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums}
+.dp-net{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:13px;font-weight:700;color:var(--ink2)}
+.dp-net::before{content:"· "}
+.dp-cur{flex:none;display:inline-flex;align-items:center;gap:2px;height:22px;padding:0 7px 0 5px;border-radius:5px;background:var(--ink);color:#fff;font-size:13px;font-weight:800}
+.dp-cur .ic{stroke-width:3}
+.dp-none{padding:24px 8px;text-align:center;font-size:15px;color:var(--ink2);line-height:1.5}
+
+/* 비었을 때 */
+.dp-empty{display:grid;justify-items:center;gap:8px;padding:32px 8px 16px;text-align:center}
+.dp-bigico{width:56px;height:56px}
+.dp-empty-t{font-size:17px;font-weight:800}
+.dp-empty-s{font-size:14px;color:var(--ink2);line-height:1.5;max-width:280px}
+.dp-emptybtn{margin-top:8px;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:52px;width:100%;max-width:280px;border-radius:12px;font-size:16px;font-weight:800}
+.dp-emptybtn:disabled{opacity:.6}
+
+@media (prefers-reduced-motion:reduce){.sheet.dp-sheet{animation:none}}

@@ -122,10 +122,10 @@ export default {
         dockBtn._sub.textContent = last ? `이어서: ${last}` : '위치는 찍으면서 적어요';
       }
     }
-    const schedule = () => { if (!queued) { queued = true; queueMicrotask(render); } };
+    const schedule = typeof dom.deferWhileTyping === 'function' ? dom.deferWhileTyping(render) : () => { if (!queued) { queued = true; queueMicrotask(render); } };   // 글 입력 중이면 끝난 뒤 한 번
     const off = store.on(ch => { if (ch?.records?.size || ch?.photos?.size || ch?.settings || ch?.meta?.has?.('lastLocation')) schedule(); });
     render();
 
-    return () => { dead = true; off?.(); dock.remove(); };
+    return () => { dead = true; schedule.cancel?.(); off?.(); dock.remove(); };
   }
 };

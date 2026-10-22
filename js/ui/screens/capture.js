@@ -83,7 +83,8 @@ function mount(root, params = {}, nav = {}) {
   let loc = recId ? store.record(recId).location : (params.draftLoc ?? safe(() => store.lastLocation(), ''));
   let content = recId ? store.record(recId).content : (params.draftContent ?? '');
   let freshHint = !!params.freshHint;                                        // [저장하고 다음] 직후 "이어받은 위치 · 맞나요?"
-  let dead = false, leaving = false, shooting = false, creating = null;
+  let dead = false, leaving = false, grabbing = false, inflight = 0, creating = null, lastPress = 0;
+  let resting = false, restN = 0, typingOn = false;                          // 글 입력 시트가 떠 있는 동안 쉼(아래 「쉬기」)
   let camOpen = false, camFailed = false, camCaps = null, opening = null;
   let orient = 0, ratio = (safe(() => store.settings(), {}).photoRatio) || '4:3';
   let layoutMode = 'cam', frame = null, docId = null, docsMod = null, awake = null;
@@ -171,24 +172,28 @@ function mount(root, params = {}, nav = {}) {
 
   const thumbCache = new Map();
   let shownThumbs = 0;
-  // 셔터 즉시 칸 — camera.shoot 의 onPreview(셔터 순간 320px 그림)로 takePhoto·디스크 저장을 기다리지 않고 사진 줄에 먼저 띄운다.
+  // 셔터 즉시 칸 — 누르는 순간 사진 줄에 빈 칸(「…」)을 먼저 띄우고, camera.shoot 의 onPreview(약 320px 그림, 워커)가 오면 그림을 채운다.
   // 진짜 칸(같은 takenAt 사진)이 생기거나 저장이 끝나면(실패 포함) 걷는다. 진짜 칸도 pipeline.preview 로 같은 그림을 이어 보인다
   const pendTiles = new Map();                                              // pressAt → { node, url }
-  function addPendTile(pressAt, blob) {
-    if (dead || pendTiles.has(pressAt) || !blob) return;
-    let url = null;
-    try { url = URL.createObjectURL(blob); } catch { return; }
-    const img = el('img', { class: 'thumb cap-th-img', src: url, alt: '저장 중', draggable: 'false' });
-    const node = el('span', { class: 'cap-th cap-th-pend', 'data-testid': 'strip-pending', 'aria-label': '저장 중' }, img, el('span', { class: 'cap-th-no' }, '…'));
-    pendTiles.set(pressAt, { node, url });
+  function addPendTile(pressAt) {
+    if (dead || pendTiles.has(pressAt)) return;
+    const node = el('span', { class: 'cap-th cap-th-pend', 'data-testid': 'strip-pending', 'aria-label': '저장 중' }, el('span', { class: 'cap-th-no' }, '…'));
+    pendTiles.set(pressAt, { node, url: null });
     paintStrip();
   }
+  function fillPendTile(pressAt, blob) {
+    const t = pendTiles.get(pressAt);
+    if (dead || !t || t.url || !blob) return;
+    try { t.url = URL.createObjectURL(blob); } catch { return; }
+    t.node.prepend(el('img', { class: 'thumb cap-th-img', src: t.url, alt: '저장 중', draggable: 'false' }));
+  }
+  const revokeLater = u => { if (u) setTimeout(() => { try { URL.revokeObjectURL(u); } catch { /* 이미 해제 */ } }, 1000); };
   function dropPendTile(pressAt) {
     const t = pendTiles.get(pressAt);
     if (!t) return;
     pendTiles.delete(pressAt);
     t.node.remove();
-    setTimeout(() => { try { URL.revokeObjectURL(t.url); } catch { /* 이미 해제 */ } }, 1000);
+    revokeLater(t.url);
     if (!dead) paintStrip();
   }
   cleanups.push(() => { for (const k of [...pendTiles.keys()]) dropPendTile(k); });
@@ -198,7 +203,7 @@ function mount(root, params = {}, nav = {}) {
     count.textContent = `사진 ${ps.length}장`;
     if (pendTiles.size) {
       const have = new Set(ps.map(p => p.takenAt));
-      for (const k of [...pendTiles.keys()]) if (have.has(k)) { const t = pendTiles.get(k); pendTiles.delete(k); setTimeout(() => { try { URL.revokeObjectURL(t.url); } catch { /* 이미 해제 */ } }, 1000); }
+      for (const k of [...pendTiles.keys()]) if (have.has(k)) { const t = pendTiles.get(k); pendTiles.delete(k); revokeLater(t.url); }
     }
     const keep = new Set();
     const nodes = ps.map((p, i) => {
@@ -325,9 +330,10 @@ function mount(root, params = {}, nav = {}) {
   const mctx = document.createElement('canvas').getContext('2d');
   const measure = (t, px, bold) => { mctx.font = wmFont(px, bold); return mctx.measureText(t).width; };
   // 글·크기·방향이 같으면 다시 그리지 않는다(30초 시계·store 알림·크기 알림이 겹쳐도 한 번). canvas 크기는 바뀔 때만 다시 잡는다
-  let wmKeyNow = '';
+  let wmKeyNow = '', wmStale = false;
   function drawWm() {
     if (dead) return;
+    if (resting) { wmStale = true; return; }                                 // 글 입력 시트가 떠 있는 동안은 미루고 닫히면 한 번
     const s = safe(() => store.settings(), {});
     const on = fn(render, 'screenWatermark') ? safe(() => render.screenWatermark(), false) : (s.wmMode !== 'off' && s.wmOnScreen !== false);
     const cw = vf.clientWidth, ch = vf.clientHeight;
@@ -358,8 +364,29 @@ function mount(root, params = {}, nav = {}) {
     ctx.scale(1 / k, 1 / k);
     drawWatermark(ctx, Wk, Hk, lay);
   }
-  const wmTimer = setInterval(drawWm, 30000);                                // 촬영 시각(분) 갱신
+  const wmTimer = setInterval(drawWm, 30000);                                // 촬영 시각(분) 갱신(쉬는 동안은 미룸)
   cleanups.push(() => clearInterval(wmTimer));
+
+  // ---------- 쉬기: 글 입력 시트가 떠 있는 동안(2026-10-22 폰 "글이 늦게 쳐짐") ----------
+  // 카메라 미리보기(트랙 끔 + 멈춤, 마지막 그림이 남음)·방향 감지·워터마크 미리보기·근처 도면 다시 찾기를 쉰다 — 키보드(IME)와 GPU·메인 스레드를 다투지 않게.
+  // 시트가 닫히면 곧바로 다시(트랙을 놓지 않으므로 다시 여는 지연 없음). dom.onTyping 이 있으면 그것도 듣는다(다른 시트·글칸)
+  function setRest() {
+    const on = !dead && (restN > 0 || typingOn);
+    if (on === resting) return;
+    resting = on;
+    safe(() => camera.pause?.(on));
+    if (!on) { if (wmStale) { wmStale = false; drawWm(); } if (sugStale) { sugStale = false; paintSuggest(); } }
+  }
+  async function resting_(p) {                                               // 시트 약속 p 가 끝날 때까지 쉰다(시트를 연 다음에 불러 포커스·키보드를 늦추지 않는다)
+    restN++; setRest();
+    try { return await p; } finally { restN = Math.max(0, restN - 1); typingOn = false; setRest(); }   // dom 의 「입력 끝」 여유(0.5초)를 기다리지 않고 바로 깨운다
+  }
+  if (fn(dom, 'onTyping')) {
+    const offT = safe(() => dom.onTyping(on => { typingOn = !!on; setRest(); }), null);
+    if (typeof offT === 'function') cleanups.push(offT);
+  }
+  if (fn(dom, 'isTyping')) safe(() => native.setTypingProbe?.(dom.isTyping));
+  cleanups.push(() => { restN = 0; typingOn = false; safe(() => camera.pause?.(false)); resting = false; });
 
   // ---------- 카메라 ----------
   function showFallback(text, { retry = false } = {}) {
@@ -473,7 +500,7 @@ function mount(root, params = {}, nav = {}) {
       const ps = recId ? safe(() => store.photosOf(recId), []) : [];
       const have = new Set(ps.map(p => p.takenAt));
       for (const [t, st] of shots) if (st.settled || have.has(t)) shots.delete(t);
-      return shots.size > 0 || shooting || !!creating;
+      return shots.size > 0 || inflight > 0 || !!creating;
     };
     if (!pending()) return Promise.resolve();
     return new Promise(resolve => {
@@ -490,27 +517,36 @@ function mount(root, params = {}, nav = {}) {
     try { navigator.vibrate?.(30); } catch { /* 진동 없음 */ }
   }
 
+  // 셔터: 번쩍 + 사진 줄 빈 칸을 누르는 순간에. 카메라는 지금 보이는 프레임을 바로 잡고(인코딩은 워커) onGrab 으로 알린다 —
+  // 그때부터 다음 셔터를 받는다(연타가 막히지 않음). 원본이 디스크에 들어가고 처리되는 것은 그 뒤에서(pipeline 줄)
   async function shoot() {
     if (leaving || dead) return;
     if (camFailed || !camOpen) { if (camFailed) return shootSystem(); dom.toast?.('카메라를 여는 중이에요'); return; }
     flash();
-    if (shooting) return;                                                    // 한 번에 하나만 — 눌린 표시만
-    shooting = true;
-    const pressAt = Date.now();
+    safe(() => native.markBusy?.());                                          // 갤러리 원본·미러 쓰기를 2초 미룬다(브리지가 다음 셔터·글을 막지 않게)
+    if (grabbing) return;                                                    // 같은 순간(프레임을 잡는 몇 ms)의 두 번째 탭 — 눌린 표시만
+    grabbing = true; inflight++;
+    const pressAt = Math.max(Date.now(), lastPress + 1);                     // 사진마다 다른 takenAt(즉시 칸·저장 확인의 열쇠)
+    lastPress = pressAt;
     const fix = safe(() => gps.fixForPhoto(pressAt), null);
+    const hiRes = !!safe(() => store.settings(), {}).captureHiRes;
+    addPendTile(pressAt);
     try {
       const recP = ensureRecord();
       let shot;
-      try { shot = await camera.shoot({ ratio, onPreview: blob => addPendTile(pressAt, blob) }); }
+      try { shot = await camera.shoot({ ratio, hiRes, onGrab: () => { grabbing = false; }, onPreview: blob => fillPendTile(pressAt, blob) }); }
       catch (e) { dropPendTile(pressAt); throw e; }
+      finally { grabbing = false; }
       const rec = await recP;
-      if (!shot) { dropPendTile(pressAt); return; }                         // 앞 셔터가 아직 도는 중(camera 가 무시)
+      if (!shot) { dropPendTile(pressAt); return; }                         // 같은 순간의 두 번째 탭(camera 가 무시)
       const st = { settled: false };
       shots.set(pressAt, st);
       const opts = { source: 'incam', takenAt: pressAt, takenAtSource: 'camera', gps: fix };
       if (shot.turns != null) opts.turns = shot.turns;
       if (shot.aspect != null) opts.aspect = shot.aspect;
       if (shot.preview) opts.preview = shot.preview;                         // 처리하는 동안 썸네일이 셔터 순간 그림을 보인다
+      if (shot.prepared) opts.prepared = shot.prepared;                       // 워커가 같이 만든 작업본·썸네일(다시 디코드하지 않음)
+      fillPendTile(pressAt, shot.preview);
       pipeline.ingest(rec.id, shot.blob, opts)
         .catch(err => { console.error('사진 처리 실패', err); dom.toast?.(saveErrText(err)); })
         .finally(() => { st.settled = true; dropPendTile(pressAt); });
@@ -521,7 +557,7 @@ function mount(root, params = {}, nav = {}) {
       console.error('찍지 못했어요', err);
       dom.toast?.(err?.code === 'QUOTA' ? saveErrText(err) : '사진을 찍지 못했어요. 다시 눌러 주세요');
     } finally {
-      shooting = false;
+      inflight = Math.max(0, inflight - 1);
     }
   }
 
@@ -573,7 +609,7 @@ function mount(root, params = {}, nav = {}) {
   }
 
   async function editLoc() {
-    const v = await dom.textSheet({ title: '위치', value: loc || '', placeholder: '예: 101동 5층 복도', multiline: false });
+    const v = await resting_(dom.textSheet({ title: '위치', value: loc || '', placeholder: '예: 101동 5층 복도', multiline: false, select: 'lastNumber' }));
     if (v == null || dead) return;
     const text = String(v).trim();
     loc = text; freshHint = false; params.freshHint = false;
@@ -588,7 +624,7 @@ function mount(root, params = {}, nav = {}) {
   }
 
   async function editContent() {
-    const v = await dom.textSheet({ title: '내용', value: content || '', placeholder: '예: 배관 보온 작업 완료', multiline: true });
+    const v = await resting_(dom.textSheet({ title: '내용', value: content || '', placeholder: '예: 배관 보온 작업 완료', multiline: true }));
     if (v == null || dead) return;
     const text = String(v).trim();
     content = text;
@@ -634,7 +670,7 @@ function mount(root, params = {}, nav = {}) {
       await waitSaved();
       const rec = live(recId);
       // 정말 빈 묶음일 때만 지운다 — 저장이 늦어(느린 폰) 아직 사진 메타가 안 들어왔을 수 있으면 그대로 둔다(빈 묶음이 남는 편이 사진을 잃는 것보다 낫다)
-      const settled = !shooting && !creating && !sysBusy && shots.size === 0 && safe(() => pipeline.pending(), 0) === 0;
+      const settled = inflight === 0 && !creating && !sysBusy && shots.size === 0 && safe(() => pipeline.pending(), 0) === 0;
       const empty = rec && createdHere && settled && (rec.photoIds?.length || 0) === 0 && safe(() => store.photosOf(rec.id).length, 0) === 0;
       const draft = !rec && String(params.draftContent || '').trim();
       if ((empty && (rec.content || '').trim()) || draft) {
@@ -721,14 +757,18 @@ function mount(root, params = {}, nav = {}) {
     let qRaf = 0;
     input.addEventListener('input', () => { if (!qRaf) qRaf = requestAnimationFrame(() => { qRaf = 0; paint(); }); });   // 한 그림에 한 번
     paint();
+    let restDone = false;
+    const unrest = () => { if (restDone) return; restDone = true; restN = Math.max(0, restN - 1); typingOn = false; setRest(); };
     closeSheet = dom.openSheet(close => el('div', { class: 'cap-docs-sheet' },
       el('h2', { class: 'sheet-title' }, '띄울 자료'), input, list,
-      el('button', { type: 'button', class: 'secondary', onclick: () => close() }, '닫기')), {}) || closeSheet;
+      el('button', { type: 'button', class: 'secondary', onclick: () => close() }, '닫기')), { onClose: unrest }) || closeSheet;
+    restN++; setRest();
   }
 
-  let sugT = 0;
+  let sugT = 0, sugStale = false;
   function paintSuggest() {
     if (dead) return;
+    if (resting) { sugStale = true; return; }
     if (docId || !docsMod) { suggest.hidden = true; return; }
     const pos = safe(() => gps.snapshot().pos, null);
     const near = pos ? safe(() => docsMod.nearby(pos, { radius: 200 }), []) : [];

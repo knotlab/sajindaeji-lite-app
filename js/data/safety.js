@@ -3,6 +3,8 @@
 //   ② 자동 파일 백업(APK): 메타 전체 JSON 을 DATA/backup/ 와 DOCUMENTS/현장사진대지 lite/백업/ 에 원자적 쓰기, 14세대, 줄어듦 방지
 //   ③ localStorage 백업(웹·APK 둘 다 — 저장 계층이 달라 IDB 와 같이 죽는 일이 드물다): 현재 + 직전 세대 하나, 용량 초과는 조용히
 //   ④ 복구 후보 찾기(checkRestore) → 사용자가 고르면 restoreFrom. 사진 본체는 파일 저장소에 남아 있으면 그대로 다시 연결된다
+// 미러·하루 백업 쓰기는 한가할 때(native.whenQuiet — 최근 2초 안에 셔터·글 입력이 없고 글 칸이 비활성, 2026-10-22 폰 "찍은 직후 글이 늦게 쳐짐").
+//   브리지 직렬화(JSON 통째 복사)가 메인 스레드를 막기 때문. 백그라운드로 갈 때(onPause)는 기다리지 않고 바로 쓴다.
 import * as N from '../platform/native.js';
 import * as store from './store.js';
 import { makeBackupJson, parseBackupJson, liveCount, pickBest, rotateLocal } from '../core/backup.js';
@@ -51,11 +53,16 @@ export async function startSafety() {
     if (dirty || dayKey(last) !== dayKey(Date.now())) backupNow({ reason: 'pause' }).catch(e => console.warn('자동 백업 실패', e));
   }) || (() => {}));
   // 앱을 켠 채 날이 바뀌어도 하루 한 번은 남게
-  const timer = setInterval(() => daily().catch(() => {}), 60 * 60 * 1000);
+  const timer = setInterval(() => quiet().then(daily).catch(() => {}), 60 * 60 * 1000);
   offs.push(() => clearInterval(timer));
   if (native()) await seedMirror().catch(e => console.warn('미러 처음 쓰기 실패', e));
-  await daily().catch(e => console.warn('자동 백업 실패', e));
+  quiet().then(daily).catch(e => console.warn('자동 백업 실패', e));       // 부팅을 기다리게 하지 않는다 — 첫 화면·첫 셔터가 먼저
 }
+const quiet = () => (N.whenQuiet ? N.whenQuiet({ quietMs: 2000, maxMs: 60000 }) : Promise.resolve());
+
+// 글 입력 중 붙잡기(app.js 가 dom.onTyping 으로 잇는다) — 미러·백업은 이미 native.whenQuiet(글 칸 포커스·최근 입력)을 기다리므로
+// 여기서는 입력 시작을 「바쁨」으로 찍어 2초 더 미루기만 한다(풀 때 따로 할 일 없음)
+export function hold(on) { if (on) N.markBusy?.(); }
 
 // 시험용 — 구독·타이머를 끈다
 export function stopSafety() {
@@ -71,12 +78,17 @@ async function daily() {
 }
 
 // ---- 미러(APK) ----
+let mirrorWaiting = false;
 function scheduleMirror() {
-  if (mirrorTimer) return;
-  mirrorTimer = setTimeout(flushMirror, MIRROR_DELAY);
+  if (mirrorTimer || mirrorWaiting) return;
+  mirrorTimer = setTimeout(() => {
+    mirrorTimer = null; mirrorWaiting = true;
+    const q = N.whenQuiet ? N.whenQuiet({ quietMs: 2000, maxMs: 15000 }) : Promise.resolve();
+    q.then(() => { if (mirrorWaiting) { mirrorWaiting = false; flushMirror(); } });
+  }, MIRROR_DELAY);
 }
 function flushMirror() {
-  clearTimeout(mirrorTimer); mirrorTimer = null;
+  clearTimeout(mirrorTimer); mirrorTimer = null; mirrorWaiting = false;
   if (!native()) { mirrorIds.clear(); mirrorMeta = false; return mirrorChain; }
   const ids = [...mirrorIds]; mirrorIds.clear();
   const withMeta = mirrorMeta; mirrorMeta = false;
